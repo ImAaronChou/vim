@@ -17,12 +17,29 @@
 #define AL_ADD	2
 #define AL_DEL	3
 
+// This flag is set whenever the argument list is being changed and calling a
+// function that might trigger an autocommand.
+static int arglist_locked = FALSE;
+
+    static int
+check_arglist_locked(void)
+{
+    if (arglist_locked)
+    {
+	emsg(_(e_cannot_change_arglist_recursively));
+	return FAIL;
+    }
+    return OK;
+}
+
 /*
  * Clear an argument list: free all file names and reset it to zero entries.
  */
     void
 alist_clear(alist_T *al)
 {
+    if (check_arglist_locked() == FAIL)
+	return;
     while (--al->al_ga.ga_len >= 0)
 	vim_free(AARGLIST(al)[al->al_ga.ga_len].ae_fname);
     ga_clear(&al->al_ga);
@@ -126,17 +143,12 @@ alist_set(
     int		fnum_len)
 {
     int		i;
-    static int  recursive = 0;
 
-    if (recursive)
-    {
-	emsg(_(e_au_recursive));
+    if (check_arglist_locked() == FAIL)
 	return;
-    }
-    ++recursive;
 
     alist_clear(al);
-    if (ga_grow(&al->al_ga, count) == OK)
+    if (GA_GROW_OK(&al->al_ga, count))
     {
 	for (i = 0; i < count; ++i)
 	{
@@ -152,7 +164,11 @@ alist_set(
 	    // May set buffer name of a buffer previously used for the
 	    // argument list, so that it's re-used by alist_add.
 	    if (fnum_list != NULL && i < fnum_len)
+	    {
+		arglist_locked = TRUE;
 		buf_set_name(fnum_list[i], files[i]);
+		arglist_locked = FALSE;
+	    }
 
 	    alist_add(al, files[i], use_curbuf ? 2 : 1);
 	    ui_breakcheck();
@@ -163,8 +179,6 @@ alist_set(
 	FreeWild(count, files);
     if (al == &global_alist)
 	arg_had_last = FALSE;
-
-    --recursive;
 }
 
 /*
@@ -179,6 +193,10 @@ alist_add(
 {
     if (fname == NULL)		// don't add NULL file names
 	return;
+    if (check_arglist_locked() == FAIL)
+	return;
+    arglist_locked = TRUE;
+
 #ifdef BACKSLASH_IN_FILENAME
     slash_adjust(fname);
 #endif
@@ -187,6 +205,8 @@ alist_add(
 	AARGLIST(al)[al->al_ga.ga_len].ae_fnum =
 	    buflist_add(fname, BLN_LISTED | (set_fnum == 2 ? BLN_CURBUF : 0));
     ++al->al_ga.ga_len;
+
+    arglist_locked = FALSE;
 }
 
 #if defined(BACKSLASH_IN_FILENAME) || defined(PROTO)
@@ -295,10 +315,10 @@ get_arglist_exp(
 	return FAIL;
     if (wig == TRUE)
 	i = expand_wildcards(ga.ga_len, (char_u **)ga.ga_data,
-					fcountp, fnamesp, EW_FILE|EW_NOTFOUND);
+			     fcountp, fnamesp, EW_FILE|EW_NOTFOUND|EW_NOTWILD);
     else
 	i = gen_expand_wildcards(ga.ga_len, (char_u **)ga.ga_data,
-					fcountp, fnamesp, EW_FILE|EW_NOTFOUND);
+			     fcountp, fnamesp, EW_FILE|EW_NOTFOUND|EW_NOTWILD);
 
     ga_clear(&ga);
     return i;
@@ -334,7 +354,8 @@ alist_add_list(
     int		i;
     int		old_argcount = ARGCOUNT;
 
-    if (ga_grow(&ALIST(curwin)->al_ga, count) == OK)
+    if (check_arglist_locked() != FAIL
+	    && GA_GROW_OK(&ALIST(curwin)->al_ga, count))
     {
 	if (after < 0)
 	    after = 0;
@@ -343,6 +364,7 @@ alist_add_list(
 	if (after < ARGCOUNT)
 	    mch_memmove(&(ARGLIST[after + count]), &(ARGLIST[after]),
 				       (ARGCOUNT - after) * sizeof(aentry_T));
+	arglist_locked = TRUE;
 	for (i = 0; i < count; ++i)
 	{
 	    int flags = BLN_LISTED | (will_edit ? BLN_CURBUF : 0);
@@ -350,6 +372,7 @@ alist_add_list(
 	    ARGLIST[after + i].ae_fname = files[i];
 	    ARGLIST[after + i].ae_fnum = buflist_add(files[i], flags);
 	}
+	arglist_locked = FALSE;
 	ALIST(curwin)->al_ga.ga_len += count;
 	if (old_argcount > 0 && curwin->w_arg_idx >= after)
 	    curwin->w_arg_idx += count;
@@ -382,6 +405,9 @@ do_arglist(
     int		match;
     int		arg_escaped = TRUE;
 
+    if (check_arglist_locked() == FAIL)
+	return FAIL;
+
     // Set default argument for ":argadd" command.
     if (what == AL_ADD && *str == NUL)
     {
@@ -409,7 +435,7 @@ do_arglist(
 	    p = file_pat_to_reg_pat(p, NULL, NULL, FALSE);
 	    if (p == NULL)
 		break;
-	    regmatch.regprog = vim_regcomp(p, p_magic ? RE_MAGIC : 0);
+	    regmatch.regprog = vim_regcomp(p, magic_isset() ? RE_MAGIC : 0);
 	    if (regmatch.regprog == NULL)
 	    {
 		vim_free(p);
@@ -531,6 +557,8 @@ ex_args(exarg_T *eap)
 
     if (eap->cmdidx != CMD_args)
     {
+	if (check_arglist_locked() == FAIL)
+	    return;
 	alist_unlink(ALIST(curwin));
 	if (eap->cmdidx == CMD_argglobal)
 	    ALIST(curwin) = &global_alist;
@@ -540,6 +568,8 @@ ex_args(exarg_T *eap)
 
     if (*eap->arg != NUL)
     {
+	if (check_arglist_locked() == FAIL)
+	    return;
 	// ":args file ..": define new argument list, handle like ":next"
 	// Also for ":argslocal file .." and ":argsglobal file ..".
 	ex_next(eap);
@@ -569,7 +599,7 @@ ex_args(exarg_T *eap)
 	garray_T	*gap = &curwin->w_alist->al_ga;
 
 	// ":argslocal": make a local copy of the global argument list.
-	if (ga_grow(gap, GARGCOUNT) == OK)
+	if (GA_GROW_OK(gap, GARGCOUNT))
 	    for (i = 0; i < GARGCOUNT; ++i)
 		if (GARGLIST[i].ae_fname != NULL)
 		{
@@ -638,7 +668,7 @@ do_argfile(exarg_T *eap, int argn)
     char_u	*p;
     int		old_arg_idx = curwin->w_arg_idx;
 
-    if (ERROR_IF_POPUP_WINDOW)
+    if (ERROR_IF_ANY_POPUP_WINDOW)
 	return;
     if (argn < 0 || argn >= ARGCOUNT)
     {
@@ -657,7 +687,7 @@ do_argfile(exarg_T *eap, int argn)
 #endif
 
 	// split window or create new tab page first
-	if (*eap->cmd == 's' || cmdmod.tab != 0)
+	if (*eap->cmd == 's' || cmdmod.cmod_tab != 0)
 	{
 	    if (win_split(0, 0) == FAIL)
 		return;
@@ -776,10 +806,23 @@ ex_argdelete(exarg_T *eap)
     int		i;
     int		n;
 
-    if (eap->addr_count > 0)
+    if (check_arglist_locked() == FAIL)
+	return;
+
+    if (eap->addr_count > 0 || *eap->arg == NUL)
     {
-	// ":1,4argdel": Delete all arguments in the range.
-	if (eap->line2 > ARGCOUNT)
+	// ":argdel" works like ":.argdel"
+	if (eap->addr_count == 0)
+	{
+	    if (curwin->w_arg_idx >= ARGCOUNT)
+	    {
+		emsg(_("E610: No argument to delete"));
+		return;
+	    }
+	    eap->line1 = eap->line2 = curwin->w_arg_idx + 1;
+	}
+	else if (eap->line2 > ARGCOUNT)
+	    // ":1,4argdel": Delete all arguments in the range.
 	    eap->line2 = ARGCOUNT;
 	n = eap->line2 - eap->line1 + 1;
 	if (*eap->arg != NUL)
@@ -789,7 +832,7 @@ ex_argdelete(exarg_T *eap)
 	{
 	    // Don't give an error for ":%argdel" if the list is empty.
 	    if (eap->line1 != 1 || eap->line2 != 0)
-		emsg(_(e_invrange));
+		emsg(_(e_invalid_range));
 	}
 	else
 	{
@@ -808,8 +851,6 @@ ex_argdelete(exarg_T *eap)
 		curwin->w_arg_idx = ARGCOUNT - 1;
 	}
     }
-    else if (*eap->arg == NUL)
-	emsg(_(e_argreq));
     else
 	do_arglist(eap->arg, AL_DEL, 0, FALSE);
 #ifdef FEAT_TITLE
@@ -864,17 +905,25 @@ do_arg_all(
 				//
     int		opened_len;	// length of opened[]
     int		use_firstwin = FALSE;	// use first window for arglist
+    int		tab_drop_empty_window = FALSE;
     int		split_ret = OK;
     int		p_ea_save;
     alist_T	*alist;		// argument list to be used
     buf_T	*buf;
     tabpage_T	*tpnext;
-    int		had_tab = cmdmod.tab;
+    int		had_tab = cmdmod.cmod_tab;
     win_T	*old_curwin, *last_curwin;
     tabpage_T	*old_curtab, *last_curtab;
     win_T	*new_curwin = NULL;
     tabpage_T	*new_curtab = NULL;
 
+#ifdef FEAT_CMDWIN
+    if (cmdwin_type != 0)
+    {
+	emsg(_(e_invalid_in_cmdline_window));
+	return;
+    }
+#endif
     if (ARGCOUNT <= 0)
     {
 	// Don't give an error message.  We don't want it when the ":all"
@@ -1027,13 +1076,16 @@ do_arg_all(
     last_curwin = curwin;
     last_curtab = curtab;
     win_enter(lastwin, FALSE);
-    // ":drop all" should re-use an empty window to avoid "--remote-tab"
+    // ":tab drop file" should re-use an empty window to avoid "--remote-tab"
     // leaving an empty tab page when executed locally.
     if (keep_tabs && BUFEMPTY() && curbuf->b_nwindows == 1
 			    && curbuf->b_ffname == NULL && !curbuf->b_changed)
+    {
 	use_firstwin = TRUE;
+	tab_drop_empty_window = TRUE;
+    }
 
-    for (i = 0; i < count && i < opened_len && !got_int; ++i)
+    for (i = 0; i < count && !got_int; ++i)
     {
 	if (alist == &global_alist && i == global_alist.al_ga.ga_len - 1)
 	    arg_had_last = TRUE;
@@ -1042,7 +1094,7 @@ do_arg_all(
 	    // Move the already present window to below the current window
 	    if (curwin->w_arg_idx != i)
 	    {
-		for (wpnext = firstwin; wpnext != NULL; wpnext = wpnext->w_next)
+		FOR_ALL_WINDOWS(wpnext)
 		{
 		    if (wpnext->w_arg_idx == i)
 		    {
@@ -1067,6 +1119,9 @@ do_arg_all(
 	}
 	else if (split_ret == OK)
 	{
+	    // trigger events for tab drop
+	    if (tab_drop_empty_window && i == count - 1)
+		--autocmd_no_enter;
 	    if (!use_firstwin)		// split current window
 	    {
 		p_ea_save = p_ea;
@@ -1091,6 +1146,8 @@ do_arg_all(
 		      ((buf_hide(curwin->w_buffer)
 			   || bufIsChanged(curwin->w_buffer)) ? ECMD_HIDE : 0)
 						       + ECMD_OLDBUF, curwin);
+	    if (tab_drop_empty_window && i == count - 1)
+		++autocmd_no_enter;
 	    if (use_firstwin)
 		++autocmd_no_leave;
 	    use_firstwin = FALSE;
@@ -1099,7 +1156,7 @@ do_arg_all(
 
 	// When ":tab" was used open a new tab for a new window repeatedly.
 	if (had_tab > 0 && tabpage_index(NULL) <= p_tpm)
-	    cmdmod.tab = 9999;
+	    cmdmod.cmod_tab = 9999;
     }
 
     // Remove the "lock" on the argument list.
@@ -1214,6 +1271,9 @@ f_argc(typval_T *argvars, typval_T *rettv)
 {
     win_T	*wp;
 
+    if (in_vim9script() && check_for_opt_number_arg(argvars, 0) == FAIL)
+	return;
+
     if (argvars[0].v_type == VAR_UNKNOWN)
 	// use the current window
 	rettv->vval.v_number = ARGCOUNT;
@@ -1249,6 +1309,12 @@ f_arglistid(typval_T *argvars, typval_T *rettv)
 {
     win_T	*wp;
 
+    if (in_vim9script()
+	    && (check_for_opt_number_arg(argvars, 0) == FAIL
+		|| (argvars[0].v_type != VAR_UNKNOWN
+		    && check_for_opt_number_arg(argvars, 1) == FAIL)))
+	return;
+
     rettv->vval.v_number = -1;
     wp = find_tabwin(&argvars[0], &argvars[1], NULL);
     if (wp != NULL)
@@ -1278,6 +1344,12 @@ f_argv(typval_T *argvars, typval_T *rettv)
     int		idx;
     aentry_T	*arglist = NULL;
     int		argcount = -1;
+
+    if (in_vim9script()
+	    && (check_for_opt_number_arg(argvars, 0) == FAIL
+		|| (argvars[0].v_type != VAR_UNKNOWN
+		    && check_for_opt_number_arg(argvars, 1) == FAIL)))
+	return;
 
     if (argvars[0].v_type != VAR_UNKNOWN)
     {

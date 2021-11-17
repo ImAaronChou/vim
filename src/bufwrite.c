@@ -30,6 +30,7 @@ struct bw_info
     int		bw_flags;	// FIO_ flags
 #ifdef FEAT_CRYPT
     buf_T	*bw_buffer;	// buffer being written
+    int         bw_finish;      // finish encrypting
 #endif
     char_u	bw_rest[CONV_RESTLEN]; // not converted bytes
     int		bw_restlen;	// nr of bytes in bw_rest[]
@@ -493,14 +494,16 @@ buf_write_bytes(struct bw_info *ip)
 	if (crypt_works_inplace(ip->bw_buffer->b_cryptstate))
 	{
 # endif
-	    crypt_encode_inplace(ip->bw_buffer->b_cryptstate, buf, len);
+	    crypt_encode_inplace(ip->bw_buffer->b_cryptstate, buf, len,
+								ip->bw_finish);
 # ifdef CRYPT_NOT_INPLACE
 	}
 	else
 	{
 	    char_u *outbuf;
 
-	    len = crypt_encode_alloc(curbuf->b_cryptstate, buf, len, &outbuf);
+	    len = crypt_encode_alloc(curbuf->b_cryptstate, buf, len, &outbuf,
+								ip->bw_finish);
 	    if (len == 0)
 		return OK;  // Crypt layer is buffering, will flush later.
 	    wlen = write_eintr(ip->bw_fd, outbuf, len);
@@ -524,7 +527,7 @@ buf_write_bytes(struct bw_info *ip)
 check_mtime(buf_T *buf, stat_T *st)
 {
     if (buf->b_mtime_read != 0
-	    && time_differs((long)st->st_mtime, buf->b_mtime_read))
+		  && time_differs(st, buf->b_mtime_read, buf->b_mtime_read_ns))
     {
 	msg_scroll = TRUE;	    // don't overwrite messages here
 	msg_silent = 0;		    // must give this prompt
@@ -597,6 +600,12 @@ set_file_time(
 # endif
 }
 #endif // UNIX
+
+    char *
+new_file_message(void)
+{
+    return shortmess(SHM_NEW) ? _("[New]") : _("[New File]");
+}
 
 /*
  * buf_write() - write to file "fname" lines "start" through "end"
@@ -683,6 +692,8 @@ buf_write(
     context_sha256_T sha_ctx;
 #endif
     unsigned int    bkc = get_bkc_value(buf);
+    pos_T	    orig_start = buf->b_op_start;
+    pos_T	    orig_end = buf->b_op_end;
 
     if (fname == NULL || *fname == NUL)	// safety check
 	return FAIL;
@@ -716,6 +727,7 @@ buf_write(
 #endif
 #ifdef FEAT_CRYPT
     write_info.bw_buffer = buf;
+    write_info.bw_finish = FALSE;
 #endif
 
     // After writing a file changedtick changes but we don't want to display
@@ -875,6 +887,13 @@ buf_write(
 #endif
 				       )
 	{
+	    if (buf != NULL && (cmdmod.cmod_flags & CMOD_LOCKMARKS))
+	    {
+		// restore the original '[ and '] positions
+		buf->b_op_start = orig_start;
+		buf->b_op_end = orig_end;
+	    }
+
 	    --no_wait_return;
 	    msg_scroll = msg_save;
 	    if (nofile_err)
@@ -950,6 +969,13 @@ buf_write(
 	    fname = buf->b_ffname;
 	if (buf_fname_s)
 	    fname = buf->b_sfname;
+    }
+
+    if (cmdmod.cmod_flags & CMOD_LOCKMARKS)
+    {
+	// restore the original '[ and '] positions
+	buf->b_op_start = orig_start;
+	buf->b_op_end = orig_end;
     }
 
 #ifdef FEAT_NETBEANS_INTG
@@ -1475,6 +1501,9 @@ buf_write(
 #if defined(HAVE_SELINUX) || defined(HAVE_SMACK)
 			mch_copy_sec(fname, backup);
 #endif
+#ifdef MSWIN
+			(void)mch_copy_file_attribute(fname, backup);
+#endif
 			break;
 		    }
 		}
@@ -1887,12 +1916,7 @@ restore_backup:
 
 #if defined(MSWIN)
 	    if (backup != NULL && overwriting && !append)
-	    {
-		if (backup_copy)
-		    (void)mch_copy_file_attribute(wfname, backup);
-		else
-		    (void)mch_copy_file_attribute(backup, wfname);
-	    }
+		(void)mch_copy_file_attribute(backup, wfname);
 
 	    if (!overwriting && !append)
 	    {
@@ -1962,8 +1986,25 @@ restore_backup:
 			    && overwriting
 			    && !append
 			    && !filtering
+# ifdef CRYPT_NOT_INPLACE
+			    // writing undo file requires
+			    // crypt_encode_inplace()
+			    && (buf->b_cryptstate == NULL
+				|| crypt_works_inplace(buf->b_cryptstate))
+# endif
 			    && reset_changed
 			    && !checking_conversion);
+# ifdef CRYPT_NOT_INPLACE
+	// remove undo file if encrypting it is not possible
+	if (buf->b_p_udf
+		&& overwriting
+		&& !append
+		&& !filtering
+		&& !checking_conversion
+		&& buf->b_cryptstate != NULL
+		&& !crypt_works_inplace(buf->b_cryptstate))
+	    u_undofile_reset_and_delete(buf);
+# endif
 	if (write_undo_file)
 	    // Prepare for computing the hash value of the text.
 	    sha256_start(&sha_ctx);
@@ -1995,6 +2036,13 @@ restore_backup:
 		++s;
 		if (++len != bufsize)
 		    continue;
+#ifdef FEAT_CRYPT
+		if (write_info.bw_fd > 0 && lnum == end
+			&& (write_info.bw_flags & FIO_ENCRYPTED)
+			&& *buf->b_p_key != NUL && !filtering
+			&& *ptr == NUL)
+		    write_info.bw_finish = TRUE;
+ #endif
 		if (buf_write_bytes(&write_info) == FAIL)
 		{
 		    end = 0;		// write error: break loop
@@ -2009,7 +2057,7 @@ restore_backup:
 	    if (end == 0
 		    || (lnum == end
 			&& (write_bin || !buf->b_p_fixeol)
-			&& (lnum == buf->b_no_eol_lnum
+			&& ((write_bin && lnum == buf->b_no_eol_lnum)
 			    || (lnum == buf->b_ml.ml_line_count
 							   && !buf->b_p_eol))))
 	    {
@@ -2064,6 +2112,10 @@ restore_backup:
 	    // structures end with a newline (carriage return) character, and
 	    // if they don't it adds one.
 	    // With other RMS structures it works perfect without this fix.
+# ifndef MIN
+// Older DECC compiler for VAX doesn't define MIN()
+#  define MIN(a, b) ((a) < (b) ? (a) : (b))
+# endif
 	    if (buf->b_fab_rfm == FAB$C_VFC
 		    || ((buf->b_fab_rat & (FAB$M_FTN | FAB$M_CR)) != 0))
 	    {
@@ -2094,6 +2146,12 @@ restore_backup:
 	if (len > 0 && end > 0)
 	{
 	    write_info.bw_len = len;
+#ifdef FEAT_CRYPT
+	    if (write_info.bw_fd > 0 && lnum >= end
+		    && (write_info.bw_flags & FIO_ENCRYPTED)
+		    && *buf->b_p_key != NUL && !filtering)
+		write_info.bw_finish = TRUE;
+ #endif
 	    if (buf_write_bytes(&write_info) == FAIL)
 		end = 0;		    // write error
 	    nchars += len;
@@ -2112,7 +2170,7 @@ restore_backup:
     if (!checking_conversion)
     {
 #if defined(UNIX) && defined(HAVE_FSYNC)
-	// On many journalling file systems there is a bug that causes both the
+	// On many journaling file systems there is a bug that causes both the
 	// original and the backup file to be lost when halting the system
 	// right after writing the file.  That's because only the meta-data is
 	// journalled.  Syncing the file slows down the system, but assures it
@@ -2327,7 +2385,7 @@ restore_backup:
 	}
 	else if (newfile)
 	{
-	    STRCAT(IObuff, shortmess(SHM_NEW) ? _("[New]") : _("[New File]"));
+	    STRCAT(IObuff, new_file_message());
 	    c = TRUE;
 	}
 	if (no_eol)
@@ -2364,8 +2422,8 @@ restore_backup:
 	    && (overwriting || vim_strchr(p_cpo, CPO_PLUS) != NULL))
     {
 	unchanged(buf, TRUE, FALSE);
-	// b:changedtick is may be incremented in unchanged() but that
-	// should not trigger a TextChanged event.
+	// b:changedtick may be incremented in unchanged() but that should not
+	// trigger a TextChanged event.
 	if (buf->b_last_changedtick + 1 == CHANGEDTICK(buf))
 	    buf->b_last_changedtick = CHANGEDTICK(buf);
 	u_unchanged(buf);
@@ -2500,6 +2558,7 @@ nofail:
 	    {
 		buf_store_time(buf, &st_old, fname);
 		buf->b_mtime_read = buf->b_mtime;
+		buf->b_mtime_read_ns = buf->b_mtime_ns;
 	    }
 	}
     }
@@ -2552,6 +2611,12 @@ nofail:
 	    retval = FALSE;
 #endif
     }
+
+#ifdef FEAT_VIMINFO
+    // Make sure marks will be written out to the viminfo file later, even when
+    // the file is new.
+    curbuf->b_marks_read = TRUE;
+#endif
 
     got_int |= prev_got_int;
 

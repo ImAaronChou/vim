@@ -57,6 +57,9 @@ static char *cmds[] = {
 # define SIGNCMD_LAST	6
 };
 
+#define FOR_ALL_SIGNS(sp)	\
+    for ((sp) = first_sign; (sp) != NULL; (sp) = (sp)->sn_next)
+
 static hashtab_T	sg_table;	// sign group (signgroup_T) hashtable
 static int		next_sign_id = 1; // next sign id in the global group
 
@@ -138,7 +141,20 @@ sign_in_group(sign_entry_T *sign, char_u *group)
     return ((group != NULL && STRCMP(group, "*") == 0)
 	    || (group == NULL && sign->se_group == NULL)
 	    || (group != NULL && sign->se_group != NULL
-				 && STRCMP(group, sign->se_group->sg_name) == 0));
+			      && STRCMP(group, sign->se_group->sg_name) == 0));
+}
+
+/*
+ * Return TRUE if "sign" is to be displayed in window "wp".
+ * If the group name starts with "PopUp" it only shows in a popup window.
+ */
+    static int
+sign_group_for_window(sign_entry_T *sign, win_T *wp)
+{
+    int for_popup = sign->se_group != NULL
+			&& STRNCMP("PopUp", sign->se_group->sg_name, 5) == 0;
+
+    return WIN_IS_POPUP(wp) ? for_popup : !for_popup;
 }
 
 /*
@@ -281,7 +297,7 @@ find_sign_by_typenr(int typenr)
 {
     sign_T	*sp;
 
-    for (sp = first_sign; sp != NULL; sp = sp->sn_next)
+    FOR_ALL_SIGNS(sp)
 	if (sp->sn_typenr == typenr)
 	    return sp;
     return NULL;
@@ -295,7 +311,7 @@ sign_typenr2name(int typenr)
 {
     sign_T	*sp;
 
-    for (sp = first_sign; sp != NULL; sp = sp->sn_next)
+    FOR_ALL_SIGNS(sp)
 	if (sp->sn_typenr == typenr)
 	    return sp->sn_name;
     return (char_u *)_("[Deleted]");
@@ -467,12 +483,13 @@ buf_change_sign_type(
  * 'lnum', FALSE otherwise.
  */
     int
-buf_get_signattrs(buf_T *buf, linenr_T lnum, sign_attrs_T *sattr)
+buf_get_signattrs(win_T *wp, linenr_T lnum, sign_attrs_T *sattr)
 {
     sign_entry_T	*sign;
     sign_T		*sp;
+    buf_T		*buf = wp->w_buffer;
 
-    vim_memset(sattr, 0, sizeof(sign_attrs_T));
+    CLEAR_POINTER(sattr);
 
     FOR_ALL_SIGNS_IN_BUF(buf, sign)
     {
@@ -481,7 +498,11 @@ buf_get_signattrs(buf_T *buf, linenr_T lnum, sign_attrs_T *sattr)
 	    // for signs after the specified line number 'lnum'.
 	    break;
 
-	if (sign->se_lnum == lnum)
+	if (sign->se_lnum == lnum
+# ifdef FEAT_PROP_POPUP
+		&& sign_group_for_window(sign, wp)
+# endif
+		)
 	{
 	    sattr->sat_typenr = sign->se_typenr;
 	    sp = find_sign_by_typenr(sign->se_typenr);
@@ -496,6 +517,31 @@ buf_get_signattrs(buf_T *buf, linenr_T lnum, sign_attrs_T *sattr)
 		sattr->sat_texthl = syn_id2attr(sp->sn_text_hl);
 	    if (sp->sn_line_hl > 0)
 		sattr->sat_linehl = syn_id2attr(sp->sn_line_hl);
+	    sattr->sat_priority = sign->se_priority;
+
+	    // If there is another sign next with the same priority, may
+	    // combine the text and the line highlighting.
+	    if (sign->se_next != NULL
+		    && sign->se_next->se_priority == sign->se_priority
+		    && sign->se_next->se_lnum == sign->se_lnum)
+	    {
+		sign_T	*next_sp = find_sign_by_typenr(sign->se_next->se_typenr);
+
+		if (next_sp != NULL)
+		{
+		    if (sattr->sat_icon == NULL && sattr->sat_text == NULL)
+		    {
+# ifdef FEAT_SIGN_ICONS
+			sattr->sat_icon = next_sp->sn_image;
+# endif
+			sattr->sat_text = next_sp->sn_text;
+		    }
+		    if (sp->sn_text_hl <= 0 && next_sp->sn_text_hl > 0)
+			sattr->sat_texthl = syn_id2attr(next_sp->sn_text_hl);
+		    if (sp->sn_line_hl <= 0 && next_sp->sn_line_hl > 0)
+			sattr->sat_linehl = syn_id2attr(next_sp->sn_line_hl);
+		}
+	    }
 	    return TRUE;
 	}
     }
@@ -683,8 +729,8 @@ buf_signcount(buf_T *buf, linenr_T lnum)
 
     return count;
 }
-#  endif /* FEAT_SIGN_ICONS */
-# endif /* FEAT_NETBEANS_INTG */
+#  endif // FEAT_SIGN_ICONS
+# endif // FEAT_NETBEANS_INTG
 
 /*
  * Delete signs in group 'group' in buffer "buf". If 'group' is '*', then
@@ -838,7 +884,7 @@ sign_find(char_u *name, sign_T **sp_prev)
 
     if (sp_prev != NULL)
 	*sp_prev = NULL;
-    for (sp = first_sign; sp != NULL; sp = sp->sn_next)
+    FOR_ALL_SIGNS(sp)
     {
 	if (STRCMP(sp->sn_name, name) == 0)
 	    break;
@@ -1007,6 +1053,16 @@ sign_define_by_name(
 	else
 	    sp_prev->sn_next = sp;
     }
+    else
+    {
+	win_T *wp;
+
+	// Signs may already exist, a redraw is needed in windows with a
+	// non-empty sign list.
+	FOR_ALL_WINDOWS(wp)
+	    if (wp->w_buffer->b_signlist != NULL)
+		redraw_buf_later(wp->w_buffer, NOT_VALID);
+    }
 
     // set values for a defined sign.
     if (icon != NULL)
@@ -1101,7 +1157,7 @@ sign_place(
     if (sign_group != NULL && (*sign_group == '*' || *sign_group == '\0'))
 	return FAIL;
 
-    for (sp = first_sign; sp != NULL; sp = sp->sn_next)
+    FOR_ALL_SIGNS(sp)
 	if (STRCMP(sp->sn_name, sign_name) == 0)
 	    break;
     if (sp == NULL)
@@ -1254,22 +1310,22 @@ sign_define_cmd(char_u *sign_name, char_u *cmdline)
 	if (STRNCMP(arg, "icon=", 5) == 0)
 	{
 	    arg += 5;
-	    icon = vim_strnsave(arg, (int)(p - arg));
+	    icon = vim_strnsave(arg, p - arg);
 	}
 	else if (STRNCMP(arg, "text=", 5) == 0)
 	{
 	    arg += 5;
-	    text = vim_strnsave(arg, (int)(p - arg));
+	    text = vim_strnsave(arg, p - arg);
 	}
 	else if (STRNCMP(arg, "linehl=", 7) == 0)
 	{
 	    arg += 7;
-	    linehl = vim_strnsave(arg, (int)(p - arg));
+	    linehl = vim_strnsave(arg, p - arg);
 	}
 	else if (STRNCMP(arg, "texthl=", 7) == 0)
 	{
 	    arg += 7;
-	    texthl = vim_strnsave(arg, (int)(p - arg));
+	    texthl = vim_strnsave(arg, p - arg);
 	}
 	else
 	{
@@ -1522,7 +1578,7 @@ parse_sign_cmd_args(
 	    filename = arg;
 	    *buf = buflist_findnr((int)getdigits(&arg));
 	    if (*skipwhite(arg) != NUL)
-		emsg(_(e_trailing));
+		semsg(_(e_trailing_arg), arg);
 	    break;
 	}
 	else
@@ -1763,10 +1819,8 @@ sign_get_placed(
     else
     {
 	FOR_ALL_BUFFERS(buf)
-	{
 	    if (buf->b_signlist != NULL)
 		sign_get_placed_in_buf(buf, 0, sign_id, sign_group, retlist);
-	}
     }
 }
 
@@ -1780,7 +1834,7 @@ sign_gui_started(void)
 {
     sign_T	*sp;
 
-    for (sp = first_sign; sp != NULL; sp = sp->sn_next)
+    FOR_ALL_SIGNS(sp)
 	if (sp->sn_icon != NULL)
 	    sp->sn_image = gui_mch_register_sign(sp->sn_icon);
 }
@@ -1861,7 +1915,7 @@ sign_get_image(
 {
     sign_T	*sp;
 
-    for (sp = first_sign; sp != NULL; sp = sp->sn_next)
+    FOR_ALL_SIGNS(sp)
 	if (sp->sn_typenr == typenr)
 	    return sp->sn_image;
     return NULL;
@@ -1900,7 +1954,7 @@ get_nth_sign_name(int idx)
 
     // Complete with name of signs already defined
     current_idx = 0;
-    for (sp = first_sign; sp != NULL; sp = sp->sn_next)
+    FOR_ALL_SIGNS(sp)
 	if (current_idx++ == idx)
 	    return sp->sn_name;
     return NULL;
@@ -2162,7 +2216,7 @@ sign_define_multiple(list_T *l, list_T *retlist)
     listitem_T	*li;
     int		retval;
 
-    for (li = l->lv_first; li != NULL; li = li->li_next)
+    FOR_ALL_LIST_ITEMS(l, li)
     {
 	retval = -1;
 	if (li->li_tv.v_type == VAR_DICT)
@@ -2180,6 +2234,11 @@ sign_define_multiple(list_T *l, list_T *retlist)
 f_sign_define(typval_T *argvars, typval_T *rettv)
 {
     char_u	*name;
+
+    if (in_vim9script()
+	    && (check_for_string_or_list_arg(argvars, 0) == FAIL
+		|| check_for_opt_dict_arg(argvars, 1) == FAIL))
+	return;
 
     if (argvars[0].v_type == VAR_LIST && argvars[1].v_type == VAR_UNKNOWN)
     {
@@ -2219,6 +2278,9 @@ f_sign_getdefined(typval_T *argvars, typval_T *rettv)
     if (rettv_list_alloc_id(rettv, aid_sign_getdefined) != OK)
 	return;
 
+    if (in_vim9script() && check_for_opt_string_arg(argvars, 0) == FAIL)
+	return;
+
     if (argvars[0].v_type != VAR_UNKNOWN)
 	name = tv_get_string(&argvars[0]);
 
@@ -2240,6 +2302,12 @@ f_sign_getplaced(typval_T *argvars, typval_T *rettv)
     int		notanum = FALSE;
 
     if (rettv_list_alloc_id(rettv, aid_sign_getplaced) != OK)
+	return;
+
+    if (in_vim9script()
+	    && (check_for_opt_buffer_arg(argvars, 0) == FAIL
+		|| (argvars[0].v_type != VAR_UNKNOWN
+		    && check_for_opt_dict_arg(argvars, 1) == FAIL)))
 	return;
 
     if (argvars[0].v_type != VAR_UNKNOWN)
@@ -2298,6 +2366,12 @@ f_sign_jump(typval_T *argvars, typval_T *rettv)
     int		notanum = FALSE;
 
     rettv->vval.v_number = -1;
+
+    if (in_vim9script()
+	    && (check_for_number_arg(argvars, 0) == FAIL
+		|| check_for_string_arg(argvars, 1) == FAIL
+		|| check_for_buffer_arg(argvars, 2) == FAIL))
+	return;
 
     // Sign identifier
     sign_id = (int)tv_get_number_chk(&argvars[0], &notanum);
@@ -2466,6 +2540,14 @@ f_sign_place(typval_T *argvars, typval_T *rettv)
 
     rettv->vval.v_number = -1;
 
+    if (in_vim9script()
+	    && (check_for_number_arg(argvars, 0) == FAIL
+		|| check_for_string_arg(argvars, 1) == FAIL
+		|| check_for_string_arg(argvars, 2) == FAIL
+		|| check_for_buffer_arg(argvars, 3) == FAIL
+		|| check_for_opt_dict_arg(argvars, 4) == FAIL))
+	return;
+
     if (argvars[4].v_type != VAR_UNKNOWN
 	    && (argvars[4].v_type != VAR_DICT
 		|| ((dict = argvars[4].vval.v_dict) == NULL)))
@@ -2490,6 +2572,9 @@ f_sign_placelist(typval_T *argvars, typval_T *rettv)
     if (rettv_list_alloc(rettv) != OK)
 	return;
 
+    if (in_vim9script() && check_for_list_arg(argvars, 0) == FAIL)
+	return;
+
     if (argvars[0].v_type != VAR_LIST)
     {
 	emsg(_(e_listreq));
@@ -2497,7 +2582,7 @@ f_sign_placelist(typval_T *argvars, typval_T *rettv)
     }
 
     // Process the List of sign attributes
-    for (li = argvars[0].vval.v_list->lv_first; li != NULL; li = li->li_next)
+    FOR_ALL_LIST_ITEMS(argvars[0].vval.v_list, li)
     {
 	sign_id = -1;
 	if (li->li_tv.v_type == VAR_DICT)
@@ -2519,7 +2604,7 @@ sign_undefine_multiple(list_T *l, list_T *retlist)
     listitem_T	*li;
     int		retval;
 
-    for (li = l->lv_first; li != NULL; li = li->li_next)
+    FOR_ALL_LIST_ITEMS(l, li)
     {
 	retval = -1;
 	name = tv_get_string_chk(&li->li_tv);
@@ -2536,6 +2621,10 @@ sign_undefine_multiple(list_T *l, list_T *retlist)
 f_sign_undefine(typval_T *argvars, typval_T *rettv)
 {
     char_u *name;
+
+    if (in_vim9script()
+	    && check_for_opt_string_or_list_arg(argvars, 0) == FAIL)
+	return;
 
     if (argvars[0].v_type == VAR_LIST && argvars[1].v_type == VAR_UNKNOWN)
     {
@@ -2633,6 +2722,41 @@ cleanup:
     return retval;
 }
 
+    sign_entry_T *
+get_first_valid_sign(win_T *wp)
+{
+    sign_entry_T *sign = wp->w_buffer->b_signlist;
+
+# ifdef FEAT_PROP_POPUP
+    while (sign != NULL && !sign_group_for_window(sign, wp))
+	sign = sign->se_next;
+# endif
+    return sign;
+}
+
+/*
+ * Return TRUE when window "wp" has a column to draw signs in.
+ */
+     int
+signcolumn_on(win_T *wp)
+{
+    // If 'signcolumn' is set to 'number', signs are displayed in the 'number'
+    // column (if present). Otherwise signs are to be displayed in the sign
+    // column.
+    if (*wp->w_p_scl == 'n' && *(wp->w_p_scl + 1) == 'u')
+	return get_first_valid_sign(wp) != NULL && !wp->w_p_nu && !wp->w_p_rnu;
+
+    if (*wp->w_p_scl == 'n')
+	return FALSE;
+    if (*wp->w_p_scl == 'y')
+	return TRUE;
+    return (get_first_valid_sign(wp) != NULL
+# ifdef FEAT_NETBEANS_INTG
+			|| wp->w_buffer->b_has_sign_column
+# endif
+		    );
+}
+
 /*
  * "sign_unplace()" function
  */
@@ -2642,6 +2766,11 @@ f_sign_unplace(typval_T *argvars, typval_T *rettv)
     dict_T	*dict = NULL;
 
     rettv->vval.v_number = -1;
+
+    if (in_vim9script()
+	    && (check_for_string_arg(argvars, 0) == FAIL
+		|| check_for_opt_dict_arg(argvars, 1) == FAIL))
+	return;
 
     if (argvars[0].v_type != VAR_STRING)
     {
@@ -2674,13 +2803,16 @@ f_sign_unplacelist(typval_T *argvars, typval_T *rettv)
     if (rettv_list_alloc(rettv) != OK)
 	return;
 
+    if (in_vim9script() && check_for_list_arg(argvars, 0) == FAIL)
+	return;
+
     if (argvars[0].v_type != VAR_LIST)
     {
 	emsg(_(e_listreq));
 	return;
     }
 
-    for (li = argvars[0].vval.v_list->lv_first; li != NULL; li = li->li_next)
+    FOR_ALL_LIST_ITEMS(argvars[0].vval.v_list, li)
     {
 	retval = -1;
 	if (li->li_tv.v_type == VAR_DICT)
@@ -2691,4 +2823,4 @@ f_sign_unplacelist(typval_T *argvars, typval_T *rettv)
     }
 }
 
-#endif /* FEAT_SIGNS */
+#endif // FEAT_SIGNS

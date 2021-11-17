@@ -1,7 +1,7 @@
 " Test for breakindent
 "
 " Note: if you get strange failures when adding new tests, it might be that
-" while the test is run, the breakindent cacheing gets in its way.
+" while the test is run, the breakindent caching gets in its way.
 " It helps to change the tabstop setting and force a redraw (e.g. see
 " Test_breakindent08())
 source check.vim
@@ -13,6 +13,10 @@ let s:input ="\tabcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOP"
 
 func s:screen_lines(lnum, width) abort
   return ScreenLines([a:lnum, a:lnum + 2], a:width)
+endfunc
+
+func s:screen_lines2(lnums, lnume, width) abort
+  return ScreenLines([a:lnums, a:lnume], a:width)
 endfunc
 
 func s:compare_lines(expect, actual)
@@ -46,9 +50,7 @@ endfunc
 
 func Test_breakindent01_vartabs()
   " like 01 but with vartabs feature
-  if !has("vartabs")
-    return
-  endif
+  CheckFeature vartabs
   call s:test_windows('setl briopt=min:0 vts=4')
   let lines = s:screen_lines(line('.'),8)
   let expect = [
@@ -75,9 +77,7 @@ func Test_breakindent02()
 endfunc
 
 func Test_breakindent02_vartabs()
-  if !has("vartabs")
-    return
-  endif
+  CheckFeature vartabs
   " simple breakindent test with showbreak set
   call s:test_windows('setl briopt=min:0 sbr=>> vts=4')
   let lines = s:screen_lines(line('.'),8)
@@ -106,9 +106,7 @@ endfunc
 
 func Test_breakindent03_vartabs()
   " simple breakindent test with showbreak set and briopt including sbr
-  if !has("vartabs")
-    return
-  endif
+  CheckFeature vartabs
   call s:test_windows('setl briopt=sbr,min:0 sbr=++ vts=4')
   let lines = s:screen_lines(line('.'),8)
   let expect = [
@@ -139,9 +137,7 @@ endfunc
 
 func Test_breakindent04_vartabs()
   " breakindent set with min width 18
-  if !has("vartabs")
-    return
-  endif
+  CheckFeature vartabs
   call s:test_windows('setl sbr= briopt=min:18 vts=4')
   let lines = s:screen_lines(line('.'),8)
   let expect = [
@@ -169,9 +165,7 @@ endfunc
 
 func Test_breakindent05_vartabs()
   " breakindent set and shift by 2
-  if !has("vartabs")
-    return
-  endif
+  CheckFeature vartabs
   call s:test_windows('setl briopt=shift:2,min:0 vts=4')
   let lines = s:screen_lines(line('.'),8)
   let expect = [
@@ -198,9 +192,7 @@ endfunc
 
 func Test_breakindent06_vartabs()
   " breakindent set and shift by -1
-  if !has("vartabs")
-    return
-  endif
+  CheckFeature vartabs
   call s:test_windows('setl briopt=shift:-1,min:0 vts=4')
   let lines = s:screen_lines(line('.'),8)
   let expect = [
@@ -227,9 +219,7 @@ func Test_breakindent07()
 endfunc
 
 func Test_breakindent07_vartabs()
-  if !has("vartabs")
-    return
-  endif
+  CheckFeature vartabs
   " breakindent set and shift by 1, Number  set sbr=? and briopt:sbr
   call s:test_windows('setl briopt=shift:1,sbr,min:0 nu sbr=? nuw=4 cpo+=n vts=4')
   let lines = s:screen_lines(line('.'),10)
@@ -258,9 +248,7 @@ func Test_breakindent07a()
 endfunc
 
 func Test_breakindent07a_vartabs()
-  if !has("vartabs")
-    return
-  endif
+  CheckFeature vartabs
   " breakindent set and shift by 1, Number  set sbr=? and briopt:sbr
   call s:test_windows('setl briopt=shift:1,sbr,min:0 nu sbr=? nuw=4 vts=4')
   let lines = s:screen_lines(line('.'),10)
@@ -293,9 +281,7 @@ func Test_breakindent08()
 endfunc
 
 func Test_breakindent08_vartabs()
-  if !has("vartabs")
-    return
-  endif
+  CheckFeature vartabs
   " breakindent set and shift by 1, Number and list set sbr=# and briopt:sbr
   call s:test_windows('setl briopt=shift:1,sbr,min:0 nu nuw=4 sbr=# list cpo+=n ts=4 vts=4')
   " make sure, cache is invalidated!
@@ -327,9 +313,7 @@ func Test_breakindent08a()
 endfunc
 
 func Test_breakindent08a_vartabs()
-  if !has("vartabs")
-    return
-  endif
+  CheckFeature vartabs
   " breakindent set and shift by 1, Number and list set sbr=# and briopt:sbr
   call s:test_windows('setl briopt=shift:1,sbr,min:0 nu nuw=4 sbr=# list vts=4')
   let lines = s:screen_lines(line('.'),10)
@@ -356,9 +340,7 @@ func Test_breakindent09()
 endfunc
 
 func Test_breakindent09_vartabs()
-  if !has("vartabs")
-    return
-  endif
+  CheckFeature vartabs
   " breakindent set and shift by 1, Number and list set sbr=#
   call s:test_windows('setl briopt=shift:1,min:0 nu nuw=4 sbr=# list vts=4')
   let lines = s:screen_lines(line('.'),10)
@@ -390,9 +372,7 @@ func Test_breakindent10()
 endfunc
 
 func Test_breakindent10_vartabs()
-  if !has("vartabs")
-    return
-  endif
+  CheckFeature vartabs
   " breakindent set, Number set sbr=~
   call s:test_windows('setl cpo+=n sbr=~ nu nuw=4 nolist briopt=sbr,min:0 vts=4')
   " make sure, cache is invalidated!
@@ -417,12 +397,11 @@ func Test_breakindent11()
   let width = strlen(text[1:]) + indent(2) + strlen(&sbr) * 3 " text wraps 3 times
   call assert_equal(width, strdisplaywidth(text))
   call s:close_windows('set sbr=')
+  call assert_equal(4, strdisplaywidth("\t", 4))
 endfunc
 
 func Test_breakindent11_vartabs()
-  if !has("vartabs")
-    return
-  endif
+  CheckFeature vartabs
   " test strdisplaywidth()
   call s:test_windows('setl cpo-=n sbr=>> nu nuw=4 nolist briopt= ts=4 vts=4')
   let text = getline(2)
@@ -446,9 +425,7 @@ func Test_breakindent12()
 endfunc
 
 func Test_breakindent12_vartabs()
-  if !has("vartabs")
-    return
-  endif
+  CheckFeature vartabs
   " test breakindent with long indent
   let s:input = "\t\t\t\t\t{"
   call s:test_windows('setl breakindent linebreak briopt=min:10 nu numberwidth=3 ts=4 list listchars=tab:>- vts=4')
@@ -477,9 +454,7 @@ func Test_breakindent13()
 endfunc
 
 func Test_breakindent13_vartabs()
-  if !has("vartabs")
-    return
-  endif
+  CheckFeature vartabs
   let s:input = ""
   call s:test_windows('setl breakindent briopt=min:10 ts=8 vts=8')
   vert resize 20
@@ -511,9 +486,7 @@ func Test_breakindent14()
 endfunc
 
 func Test_breakindent14_vartabs()
-  if !has("vartabs")
-    return
-  endif
+  CheckFeature vartabs
   let s:input = ""
   call s:test_windows('setl breakindent briopt= ts=8 vts=8')
   vert resize 30
@@ -547,9 +520,7 @@ func Test_breakindent15()
 endfunc
 
 func Test_breakindent15_vartabs()
-  if !has("vartabs")
-    return
-  endif
+  CheckFeature vartabs
   let s:input = ""
   call s:test_windows('setl breakindent briopt= ts=8 sw=8 vts=8')
   vert resize 30
@@ -591,9 +562,7 @@ func Test_breakindent16()
 endfunc
 
 func Test_breakindent16_vartabs()
-  if !has("vartabs")
-    return
-  endif
+  CheckFeature vartabs
   " Check that overlong lines are indented correctly.
   let s:input = ""
   call s:test_windows('setl breakindent briopt=min:0 ts=4 vts=4')
@@ -619,9 +588,7 @@ func Test_breakindent16_vartabs()
 endfunc
 
 func Test_breakindent17_vartabs()
-  if !has("vartabs")
-    return
-  endif
+  CheckFeature vartabs
   let s:input = ""
   call s:test_windows('setl breakindent list listchars=tab:<-> showbreak=+++')
   call setline(1, "\t" . repeat('a', 63))
@@ -639,9 +606,7 @@ func Test_breakindent17_vartabs()
 endfunc
 
 func Test_breakindent18_vartabs()
-  if !has("vartabs")
-    return
-  endif
+  CheckFeature vartabs
   let s:input = ""
   call s:test_windows('setl breakindent list listchars=tab:<->')
   call setline(1, "\t" . repeat('a', 63))
@@ -658,3 +623,230 @@ func Test_breakindent18_vartabs()
   call s:close_windows('set breakindent& list& listchars&')
 endfunc
 
+func Test_breakindent19_sbr_nextpage()
+  let s:input = ""
+  call s:test_windows('setl breakindent briopt=shift:2,sbr,min:18 sbr=>')
+  call setline(1, repeat('a', 200))
+  norm! 1gg
+  redraw!
+  let lines = s:screen_lines(1, 20)
+  let expect = [
+	\ "aaaaaaaaaaaaaaaaaaaa",
+	\ "> aaaaaaaaaaaaaaaaaa",
+	\ "> aaaaaaaaaaaaaaaaaa",
+	\ ]
+  call s:compare_lines(expect, lines)
+  " Scroll down one screen line
+  setl scrolloff=5
+  norm! 5gj
+  let lines = s:screen_lines(1, 20)
+  let expect = [
+	\ "aaaaaaaaaaaaaaaaaaaa",
+	\ "> aaaaaaaaaaaaaaaaaa",
+	\ "> aaaaaaaaaaaaaaaaaa",
+	\ ]
+  call s:compare_lines(expect, lines)
+  redraw!
+  " moving the cursor doesn't change the text offset
+  norm! l
+  redraw!
+  let lines = s:screen_lines(1, 20)
+  call s:compare_lines(expect, lines)
+
+  setl breakindent briopt=min:18 sbr=>
+  norm! 5gj
+  let lines = s:screen_lines(1, 20)
+  let expect = [
+	\ ">aaaaaaaaaaaaaaaaaaa",
+	\ ">aaaaaaaaaaaaaaaaaaa",
+	\ ">aaaaaaaaaaaaaaaaaaa",
+	\ ]
+  call s:compare_lines(expect, lines)
+  call s:close_windows('set breakindent& briopt& sbr&')
+endfunc
+
+func Test_breakindent20_cpo_n_nextpage()
+  let s:input = ""
+  call s:test_windows('setl breakindent briopt=min:14 cpo+=n number')
+  call setline(1, repeat('a', 200))
+  norm! 1gg
+  redraw!
+  let lines = s:screen_lines(1, 20)
+  let expect = [
+	\ "  1 aaaaaaaaaaaaaaaa",
+	\ "    aaaaaaaaaaaaaaaa",
+	\ "    aaaaaaaaaaaaaaaa",
+	\ ]
+  call s:compare_lines(expect, lines)
+  " Scroll down one screen line
+  setl scrolloff=5
+  norm! 5gj
+  redraw!
+  let lines = s:screen_lines(1, 20)
+  let expect = [
+	\ "--1 aaaaaaaaaaaaaaaa",
+	\ "    aaaaaaaaaaaaaaaa",
+	\ "    aaaaaaaaaaaaaaaa",
+	\ ]
+  call s:compare_lines(expect, lines)
+
+  setl briopt+=shift:2
+  norm! 1gg
+  let lines = s:screen_lines(1, 20)
+  let expect = [
+	\ "  1 aaaaaaaaaaaaaaaa",
+	\ "      aaaaaaaaaaaaaa",
+	\ "      aaaaaaaaaaaaaa",
+	\ ]
+  call s:compare_lines(expect, lines)
+  " Scroll down one screen line
+  norm! 5gj
+  let lines = s:screen_lines(1, 20)
+  let expect = [
+	\ "--1   aaaaaaaaaaaaaa",
+	\ "      aaaaaaaaaaaaaa",
+	\ "      aaaaaaaaaaaaaa",
+	\ ]
+  call s:compare_lines(expect, lines)
+
+  call s:close_windows('set breakindent& briopt& cpo& number&')
+endfunc
+
+func Test_breakindent20_list()
+  call s:test_windows('setl breakindent breakindentopt= linebreak')
+  " default:
+  call setline(1, ['  1.  Congress shall make no law',
+        \ '  2.) Congress shall make no law',
+        \ '  3.] Congress shall make no law'])
+  norm! 1gg
+  redraw!
+  let lines = s:screen_lines2(1, 6, 20)
+  let expect = [
+	\ "  1.  Congress      ",
+	\ "shall make no law   ",
+	\ "  2.) Congress      ",
+	\ "shall make no law   ",
+	\ "  3.] Congress      ",
+	\ "shall make no law   ",
+	\ ]
+  call s:compare_lines(expect, lines)
+  " set mininum indent
+  setl briopt=min:5
+  redraw!
+  let lines = s:screen_lines2(1, 6, 20)
+  let expect = [
+	\ "  1.  Congress      ",
+	\ "  shall make no law ",
+	\ "  2.) Congress      ",
+	\ "  shall make no law ",
+	\ "  3.] Congress      ",
+	\ "  shall make no law ",
+	\ ]
+  call s:compare_lines(expect, lines)
+  " set additional handing indent
+  setl briopt+=list:4
+  redraw!
+  let expect = [
+	\ "  1.  Congress      ",
+	\ "      shall make no ",
+	\ "      law           ",
+	\ "  2.) Congress      ",
+	\ "      shall make no ",
+	\ "      law           ",
+	\ "  3.] Congress      ",
+	\ "      shall make no ",
+	\ "      law           ",
+	\ ]
+  let lines = s:screen_lines2(1, 9, 20)
+  call s:compare_lines(expect, lines)
+
+  " reset linebreak option
+  " Note: it indents by one additional
+  " space, because of the leading space.
+  setl linebreak&vim list listchars=eol:$,space:_
+  redraw!
+  let expect = [
+	\ "__1.__Congress_shall",
+	\ "      _make_no_law$ ",
+	\ "__2.)_Congress_shall",
+	\ "      _make_no_law$ ",
+	\ "__3.]_Congress_shall",
+	\ "      _make_no_law$ ",
+	\ ]
+  let lines = s:screen_lines2(1, 6, 20)
+  call s:compare_lines(expect, lines)
+
+  " check formatlistpat indent
+  setl briopt=min:5,list:-1
+  setl linebreak list&vim listchars&vim
+  let &l:flp = '^\s*\d\+\.\?[\]:)}\t ]\s*'
+  redraw!
+  let expect = [
+	\ "  1.  Congress      ",
+	\ "      shall make no ",
+	\ "      law           ",
+	\ "  2.) Congress      ",
+	\ "      shall make no ",
+	\ "      law           ",
+	\ "  3.] Congress      ",
+	\ "      shall make no ",
+	\ "      law           ",
+	\ ]
+  let lines = s:screen_lines2(1, 9, 20)
+  call s:compare_lines(expect, lines)
+  " check formatlistpat indent with different list levels
+  let &l:flp = '^\s*\*\+\s\+'
+  redraw!
+  %delete _
+  call setline(1, ['* Congress shall make no law',
+        \ '*** Congress shall make no law',
+        \ '**** Congress shall make no law'])
+  norm! 1gg
+  let expect = [
+	\ "* Congress shall    ",
+	\ "  make no law       ",
+	\ "*** Congress shall  ",
+	\ "    make no law     ",
+	\ "**** Congress shall ",
+	\ "     make no law    ",
+	\ ]
+  let lines = s:screen_lines2(1, 6, 20)
+  call s:compare_lines(expect, lines)
+
+  " check formatlistpat indent with different list level
+  " showbreak and sbr
+  setl briopt=min:5,sbr,list:-1,shift:2
+  setl showbreak=>
+  redraw!
+  let expect = [
+	\ "* Congress shall    ",
+	\ "> make no law       ",
+	\ "*** Congress shall  ",
+	\ ">   make no law     ",
+	\ "**** Congress shall ",
+	\ ">    make no law    ",
+	\ ]
+  let lines = s:screen_lines2(1, 6, 20)
+  call s:compare_lines(expect, lines)
+  call s:close_windows('set breakindent& briopt& linebreak& list& listchars& showbreak&')
+endfunc
+
+" The following used to crash Vim. This is fixed by 8.2.3391.
+" This is a regression introduced by 8.2.2903.
+func Test_window_resize_with_linebreak()
+  new
+  53vnew
+  set linebreak
+  set showbreak=>>
+  set breakindent
+  set breakindentopt=shift:4
+  call setline(1, "\naaaaaaaaa\n\na\naaaaa\n¯aaaaaaaaaa\naaaaaaaaaaaa\naaa\n\"a:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa - aaaaaaaa\"\naaaaaaaa\n\"a")
+  redraw!
+  call assert_equal(["    >>aa^@\"a: "], ScreenLines(2, 14))
+  vertical resize 52
+  redraw!
+  call assert_equal(["    >>aaa^@\"a:"], ScreenLines(2, 14))
+  %bw!
+endfunc
+
+" vim: shiftwidth=2 sts=2 expandtab

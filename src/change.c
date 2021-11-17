@@ -58,7 +58,7 @@ change_warning(int col)
 		)
 	{
 	    out_flush();
-	    ui_delay(1000L, TRUE); // give the user time to think about it
+	    ui_delay(1002L, TRUE); // give the user time to think about it
 	}
 	curbuf->b_did_warn = TRUE;
 	redraw_cmdline = FALSE;	// don't redraw and erase the message
@@ -115,10 +115,10 @@ changed(void)
 	    // Wait two seconds, to make sure the user reads this unexpected
 	    // message.  Since we could be anywhere, call wait_return() now,
 	    // and don't let the emsg() set msg_scroll.
-	    if (need_wait_return && emsg_silent == 0)
+	    if (need_wait_return && emsg_silent == 0 && !in_assert_fails)
 	    {
 		out_flush();
-		ui_delay(2000L, TRUE);
+		ui_delay(2002L, TRUE);
 		wait_return(TRUE);
 		msg_scroll = save_msg_scroll;
 	    }
@@ -172,8 +172,7 @@ check_recorded_changes(
 	linenr_T    prev_lnum;
 	linenr_T    prev_lnume;
 
-	for (li = buf->b_recorded_changes->lv_first; li != NULL;
-							      li = li->li_next)
+	FOR_ALL_LIST_ITEMS(buf->b_recorded_changes, li)
 	{
 	    prev_lnum = (linenr_T)dict_get_number(
 				      li->li_tv.vval.v_dict, (char_u *)"lnum");
@@ -242,6 +241,9 @@ f_listener_add(typval_T *argvars, typval_T *rettv)
     listener_T	*lnr;
     buf_T	*buf = curbuf;
 
+    if (in_vim9script() && check_for_opt_buffer_arg(argvars, 1) == FAIL)
+	return;
+
     callback = get_callback(&argvars[0]);
     if (callback.cb_name == NULL)
 	return;
@@ -279,6 +281,9 @@ f_listener_flush(typval_T *argvars, typval_T *rettv UNUSED)
 {
     buf_T	*buf = curbuf;
 
+    if (in_vim9script() && check_for_opt_buffer_arg(argvars, 0) == FAIL)
+	return;
+
     if (argvars[0].v_type != VAR_UNKNOWN)
     {
 	buf = get_buf_arg(&argvars[0]);
@@ -286,6 +291,18 @@ f_listener_flush(typval_T *argvars, typval_T *rettv UNUSED)
 	    return;
     }
     invoke_listeners(buf);
+}
+
+
+    static void
+remove_listener(buf_T *buf, listener_T *lnr, listener_T *prev)
+{
+    if (prev != NULL)
+	prev->lr_next = lnr->lr_next;
+    else
+	buf->b_listener = lnr->lr_next;
+    free_callback(&lnr->lr_callback);
+    vim_free(lnr);
 }
 
 /*
@@ -297,9 +314,13 @@ f_listener_remove(typval_T *argvars, typval_T *rettv)
     listener_T	*lnr;
     listener_T	*next;
     listener_T	*prev;
-    int		id = tv_get_number(argvars);
+    int		id;
     buf_T	*buf;
 
+    if (in_vim9script() && check_for_number_arg(argvars, 0) == FAIL)
+	return;
+
+    id = tv_get_number(argvars);
     FOR_ALL_BUFFERS(buf)
     {
 	prev = NULL;
@@ -308,12 +329,13 @@ f_listener_remove(typval_T *argvars, typval_T *rettv)
 	    next = lnr->lr_next;
 	    if (lnr->lr_id == id)
 	    {
-		if (prev != NULL)
-		    prev->lr_next = lnr->lr_next;
-		else
-		    buf->b_listener = lnr->lr_next;
-		free_callback(&lnr->lr_callback);
-		vim_free(lnr);
+		if (textwinlock > 0)
+		{
+		    // in invoke_listeners(), clear ID and delete later
+		    lnr->lr_id = 0;
+		    return;
+		}
+		remove_listener(buf, lnr, prev);
 		rettv->vval.v_number = 1;
 		return;
 	    }
@@ -348,6 +370,7 @@ invoke_listeners(buf_T *buf)
     linenr_T	added = 0;
     int		save_updating_screen = updating_screen;
     static int	recursive = FALSE;
+    listener_T	*next;
 
     if (buf->b_recorded_changes == NULL  // nothing changed
 	    || buf->b_listener == NULL   // no listeners
@@ -362,8 +385,7 @@ invoke_listeners(buf_T *buf)
     argv[0].v_type = VAR_NUMBER;
     argv[0].vval.v_number = buf->b_fnum; // a:bufnr
 
-
-    for (li = buf->b_recorded_changes->lv_first; li != NULL; li = li->li_next)
+    FOR_ALL_LIST_ITEMS(buf->b_recorded_changes, li)
     {
 	varnumber_T lnum;
 
@@ -384,7 +406,7 @@ invoke_listeners(buf_T *buf)
 
     argv[4].v_type = VAR_LIST;
     argv[4].vval.v_list = buf->b_recorded_changes;
-    ++textlock;
+    ++textwinlock;
 
     for (lnr = buf->b_listener; lnr != NULL; lnr = lnr->lr_next)
     {
@@ -392,7 +414,19 @@ invoke_listeners(buf_T *buf)
 	clear_tv(&rettv);
     }
 
-    --textlock;
+    // If f_listener_remove() was called may have to remove a listener now.
+    for (lnr = buf->b_listener; lnr != NULL; lnr = next)
+    {
+	listener_T	*prev = NULL;
+
+	next = lnr->lr_next;
+	if (lnr->lr_id == 0)
+	    remove_listener(buf, lnr, prev);
+	else
+	    prev = lnr;
+    }
+
+    --textwinlock;
     list_unref(buf->b_recorded_changes);
     buf->b_recorded_changes = NULL;
 
@@ -455,7 +489,7 @@ changed_common(
 #endif
 
     // set the '. mark
-    if (!cmdmod.keepjumps)
+    if ((cmdmod.cmod_flags & CMOD_KEEPJUMPS) == 0)
     {
 	curbuf->b_last_change.lnum = lnum;
 	curbuf->b_last_change.col = col;
@@ -565,9 +599,12 @@ changed_common(
 		changed_cline_bef_curs_win(wp);
 	    if (wp->w_botline >= lnum)
 	    {
-		// Assume that botline doesn't change (inserted lines make
-		// other lines scroll down below botline).
-		approximate_botline_win(wp);
+		if (xtra < 0)
+		    invalidate_botline_win(wp);
+		else
+		    // Assume that botline doesn't change (inserted lines make
+		    // other lines scroll down below botline).
+		    approximate_botline_win(wp);
 	    }
 
 	    // Check if any w_lines[] entries have become invalid.
@@ -695,10 +732,10 @@ changed_bytes(linenr_T lnum, colnr_T col)
  * Like changed_bytes() but also adjust text properties for "added" bytes.
  * When "added" is negative text was deleted.
  */
-    static void
+    void
 inserted_bytes(linenr_T lnum, colnr_T col, int added UNUSED)
 {
-#ifdef FEAT_TEXT_PROP
+#ifdef FEAT_PROP_POPUP
     if (curbuf->b_has_textprop && added != 0)
 	adjust_prop_columns(lnum, col, added, 0);
 #endif
@@ -760,7 +797,7 @@ deleted_lines_mark(linenr_T lnum, long count)
 /*
  * Marks the area to be redrawn after a change.
  */
-    static void
+    void
 changed_lines_buf(
     buf_T	*buf,
     linenr_T	lnum,	    // first line with change
@@ -865,6 +902,57 @@ unchanged(buf_T *buf, int ff, int always_inc_changedtick)
 #ifdef FEAT_NETBEANS_INTG
     netbeans_unmodified(buf);
 #endif
+}
+
+/*
+ * Save the current values of 'fileformat' and 'fileencoding', so that we know
+ * the file must be considered changed when the value is different.
+ */
+    void
+save_file_ff(buf_T *buf)
+{
+    buf->b_start_ffc = *buf->b_p_ff;
+    buf->b_start_eol = buf->b_p_eol;
+    buf->b_start_bomb = buf->b_p_bomb;
+
+    // Only use free/alloc when necessary, they take time.
+    if (buf->b_start_fenc == NULL
+			     || STRCMP(buf->b_start_fenc, buf->b_p_fenc) != 0)
+    {
+	vim_free(buf->b_start_fenc);
+	buf->b_start_fenc = vim_strsave(buf->b_p_fenc);
+    }
+}
+
+/*
+ * Return TRUE if 'fileformat' and/or 'fileencoding' has a different value
+ * from when editing started (save_file_ff() called).
+ * Also when 'endofline' was changed and 'binary' is set, or when 'bomb' was
+ * changed and 'binary' is not set.
+ * Also when 'endofline' was changed and 'fixeol' is not set.
+ * When "ignore_empty" is true don't consider a new, empty buffer to be
+ * changed.
+ */
+    int
+file_ff_differs(buf_T *buf, int ignore_empty)
+{
+    // In a buffer that was never loaded the options are not valid.
+    if (buf->b_flags & BF_NEVERLOADED)
+	return FALSE;
+    if (ignore_empty
+	    && (buf->b_flags & BF_NEW)
+	    && buf->b_ml.ml_line_count == 1
+	    && *ml_get_buf(buf, (linenr_T)1, FALSE) == NUL)
+	return FALSE;
+    if (buf->b_start_ffc != *buf->b_p_ff)
+	return TRUE;
+    if ((buf->b_p_bin || !buf->b_p_fixeol) && buf->b_start_eol != buf->b_p_eol)
+	return TRUE;
+    if (!buf->b_p_bin && buf->b_start_bomb != buf->b_p_bomb)
+	return TRUE;
+    if (buf->b_start_fenc == NULL)
+	return (*buf->b_p_fenc != NUL);
+    return (STRCMP(buf->b_start_fenc, buf->b_p_fenc) != 0);
 }
 
 /*
@@ -1167,7 +1255,7 @@ del_bytes(
     // If "count" is negative the caller must be doing something wrong.
     if (count < 1)
     {
-	siemsg("E950: Invalid count for del_bytes(): %ld", count);
+	siemsg("E292: Invalid count for del_bytes(): %ld", count);
 	return FAIL;
     }
 
@@ -1202,7 +1290,7 @@ del_bytes(
 	// fixpos is TRUE, we don't want to end up positioned at the NUL,
 	// unless "restart_edit" is set or 'virtualedit' contains "onemore".
 	if (col > 0 && fixpos && restart_edit == 0
-					      && (ve_flags & VE_ONEMORE) == 0)
+					      && (get_ve_flags() & VE_ONEMORE) == 0)
 	{
 	    --curwin->w_cursor.col;
 	    curwin->w_cursor.coladd = 0;
@@ -1238,7 +1326,7 @@ del_bytes(
     mch_memmove(newp + col, oldp + col + count, (size_t)movelen);
     if (alloc_newp)
 	ml_replace(lnum, newp, FALSE);
-#ifdef FEAT_TEXT_PROP
+#ifdef FEAT_PROP_POPUP
     else
     {
 	// Also move any following text properties.
@@ -1250,7 +1338,7 @@ del_bytes(
 #endif
 
     // mark the buffer as changed and prepare for displaying
-    inserted_bytes(lnum, curwin->w_cursor.col, -count);
+    inserted_bytes(lnum, col, -count);
 
     return OK;
 }
@@ -1320,7 +1408,7 @@ open_line(
 
     // make a copy of the current line so we can mess with it
     saved_line = vim_strsave(ml_get_curline());
-    if (saved_line == NULL)	    /* out of memory! */
+    if (saved_line == NULL)	    // out of memory!
 	return FALSE;
 
     if (State & VREPLACE_FLAG)
@@ -1595,7 +1683,7 @@ open_line(
 		}
 
 		// Isolate the strings of the middle and end leader.
-		while (*p && p[-1] != ':')	/* find end of middle flags */
+		while (*p && p[-1] != ':')	// find end of middle flags
 		{
 		    if (*p == COM_BLANK)
 			require_blank = TRUE;
@@ -1957,7 +2045,7 @@ open_line(
 	// When in REPLACE mode, put the deleted blanks on the replace stack,
 	// preceded by a NUL, so they can be put back when a BS is entered.
 	if (REPLACE_NORMAL(State))
-	    replace_push(NUL);	    /* end of extra blanks */
+	    replace_push(NUL);	    // end of extra blanks
 	if (curbuf->b_p_ai || (flags & OPENLINE_DELSPACES))
 	{
 	    while ((*p_extra == ' ' || *p_extra == '\t')
@@ -2024,7 +2112,7 @@ open_line(
 	    )
 	    mark_adjust(curwin->w_cursor.lnum + 1, (linenr_T)MAXLNUM, 1L, 0L);
 	did_append = TRUE;
-#ifdef FEAT_TEXT_PROP
+#ifdef FEAT_PROP_POPUP
 	if ((State & INSERT) && !(State & VREPLACE_FLAG))
 	    // properties after the split move to the next line
 	    adjust_props_for_split(curwin->w_cursor.lnum, curwin->w_cursor.lnum,
@@ -2039,7 +2127,7 @@ open_line(
 	{
 	    // In case we NL to a new line, BS to the previous one, and NL
 	    // again, we don't want to save the new line for undo twice.
-	    (void)u_save_cursor();		    /* errors are ignored! */
+	    (void)u_save_cursor();		    // errors are ignored!
 	    vr_lines_changed++;
 	}
 	ml_replace(curwin->w_cursor.lnum, p_extra, TRUE);
@@ -2268,7 +2356,7 @@ del_lines(long nlines,	int undo)
 	if (curbuf->b_ml.ml_flags & ML_EMPTY)	    // nothing to delete
 	    break;
 
-	ml_delete(first, TRUE);
+	ml_delete_flags(first, ML_DEL_MESSAGE);
 	++n;
 
 	// If we delete the last line in the file, stop

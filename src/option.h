@@ -10,6 +10,9 @@
  * option.h: definition of global variables for settable options
  */
 
+#ifndef _OPTION_H_
+#define _OPTION_H_
+
 //
 // Flags
 //
@@ -56,6 +59,17 @@
 #define P_NDNAME      0x8000000L // only normal dir name chars allowed
 #define P_RWINONLY   0x10000000L // only redraw current window
 #define P_MLE	     0x20000000L // under control of 'modelineexpr'
+
+// Returned by get_option_value().
+typedef enum {
+    gov_unknown,
+    gov_bool,
+    gov_number,
+    gov_string,
+    gov_hidden_bool,
+    gov_hidden_number,
+    gov_hidden_string
+} getoption_T;
 
 /*
  * Default values for 'errorformat'.
@@ -113,7 +127,11 @@
 #define ENC_UCSBOM	"ucs-bom"	// check for BOM at start of file
 
 // default value for 'encoding'
-#define ENC_DFLT	"latin1"
+#ifdef MSWIN
+# define ENC_DFLT	"utf-8"
+#else
+# define ENC_DFLT	"latin1"
+#endif
 
 // end-of-line style
 #define EOL_UNKNOWN	-1	// not defined yet
@@ -138,12 +156,13 @@
 #define FO_ONE_LETTER	'1'
 #define FO_WHITE_PAR	'w'	// trailing white space continues paragr.
 #define FO_AUTO		'a'	// automatic formatting
+#define FO_RIGOROUS_TW	']'     // respect textwidth rigorously
 #define FO_REMOVE_COMS	'j'	// remove comment leaders when joining lines
 #define FO_PERIOD_ABBR	'p'	// don't break a single space after a period
 
 #define DFLT_FO_VI	"vt"
 #define DFLT_FO_VIM	"tcq"
-#define FO_ALL		"tcroq2vlb1mMBn,awjp"	// for do_set()
+#define FO_ALL		"tcroq2vlb1mMBn,aw]jp"	// for do_set()
 
 // characters for the p_cpo option:
 #define CPO_ALTREAD	'a'	// ":read" sets alternate file name
@@ -197,7 +216,7 @@
 #define CPO_MINUS	'-'	// "9-" fails at and before line 9
 #define CPO_SPECI	'<'	// don't recognize <> in mappings
 #define CPO_REGAPPEND	'>'	// insert NL when appending to a register
-/* POSIX flags */
+// POSIX flags
 #define CPO_HASH	'#'	// "D", "o" and "O" do not use a count
 #define CPO_PARA	'{'	// "{" is also a paragraph boundary
 #define CPO_TSIZE	'|'	// $LINES and $COLUMNS overrule term size
@@ -207,7 +226,7 @@
 #define CPO_CHDIR	'.'	// don't chdir if buffer is modified
 #define CPO_SCOLON	';'	// using "," and ";" will skip over char if
 				// cursor would not move
-/* default values for Vim, Vi and POSIX */
+// default values for Vim, Vi and POSIX
 #define CPO_VIM		"aABceFs"
 #define CPO_VI		"aAbBcCdDeEfFgHiIjJkKlLmMnoOpPqrRsStuvwWxXyZ$!%*-+<>;"
 #define CPO_ALL		"aAbBcCdDeEfFgHiIjJkKlLmMnoOpPqrRsStuvwWxXyZ$!%*-+<>#{|&/\\.;"
@@ -341,9 +360,14 @@
 #define WIM_BUFLASTUSED	0x08
 
 // arguments for can_bs()
+// each defined char should be unique over all values
+// except for BS_START, that intentionally also matches BS_NOSTOP
+// because BS_NOSTOP behaves exactly the same except it
+// does not stop at the start of the insert point
 #define BS_INDENT	'i'	// "Indent"
-#define BS_EOL		'o'	// "eOl"
+#define BS_EOL		'l'	// "eoL"
 #define BS_START	's'	// "Start"
+#define BS_NOSTOP	'p'	// "nostoP
 
 // flags for the 'culopt' option
 #define CULOPT_LINE	0x01	// Highlight complete line
@@ -363,6 +387,9 @@ EXTERN char_u	*p_ambw;	// 'ambiwidth'
 #ifdef FEAT_AUTOCHDIR
 EXTERN int	p_acd;		// 'autochdir'
 #endif
+#ifdef FEAT_AUTOSHELLDIR
+EXTERN int	p_asd;		// 'autoshelldir'
+#endif
 EXTERN int	p_ai;		// 'autoindent'
 EXTERN int	p_bin;		// 'binary'
 EXTERN int	p_bomb;		// 'bomb'
@@ -377,6 +404,7 @@ EXTERN char_u	*p_cinw;	// 'cinwords'
 #ifdef FEAT_COMPL_FUNC
 EXTERN char_u	*p_cfu;		// 'completefunc'
 EXTERN char_u	*p_ofu;		// 'omnifunc'
+EXTERN char_u	*p_tsrfu;	// 'thesaurusfunc'
 #endif
 EXTERN int	p_ci;		// 'copyindent'
 #if defined(FEAT_GUI) && defined(MACOS_X)
@@ -400,7 +428,7 @@ EXTERN char_u	*p_bex;		// 'backupext'
 EXTERN char_u	*p_bo;		// 'belloff'
 EXTERN unsigned	bo_flags;
 
-// values for the 'beepon' option
+// values for the 'belloff' option
 #define BO_ALL		0x0001
 #define BO_BS		0x0002
 #define BO_CRSR		0x0004
@@ -567,7 +595,7 @@ EXTERN char_u	*p_fp;		// 'formatprg'
 EXTERN int	p_fs;		// 'fsync'
 #endif
 EXTERN int	p_gd;		// 'gdefault'
-#ifdef FEAT_TEXT_PROP
+#ifdef FEAT_PROP_POPUP
 # ifdef FEAT_QUICKFIX
 EXTERN char_u	*p_cpp;		// 'completepopup'
 # endif
@@ -594,6 +622,9 @@ EXTERN char_u	*p_guifontset;	// 'guifontset'
 EXTERN char_u	*p_guifontwide;	// 'guifontwide'
 EXTERN int	p_guipty;	// 'guipty'
 #endif
+#ifdef FEAT_GUI_GTK
+EXTERN char_u	*p_guiligatures;  // 'guiligatures'
+# endif
 #if defined(FEAT_GUI_GTK) || defined(FEAT_GUI_X11)
 EXTERN long	p_ghr;		// 'guiheadroom'
 #endif
@@ -691,9 +722,6 @@ EXTERN int	p_lz;		// 'lazyredraw'
 EXTERN int	p_lpl;		// 'loadplugins'
 #if defined(DYNAMIC_LUA)
 EXTERN char_u	*p_luadll;	// 'luadll'
-#endif
-#ifdef FEAT_GUI_MAC
-EXTERN int	p_macatsui;	// 'macatsui'
 #endif
 EXTERN int	p_magic;	// 'magic'
 EXTERN char_u	*p_menc;	// 'makeencoding'
@@ -812,6 +840,7 @@ EXTERN int	p_ru;		// 'ruler'
 EXTERN char_u	*p_ruf;		// 'rulerformat'
 #endif
 EXTERN char_u	*p_pp;		// 'packpath'
+EXTERN char_u	*p_qftf;	// 'quickfixtextfunc'
 EXTERN char_u	*p_rtp;		// 'runtimepath'
 EXTERN long	p_sj;		// 'scrolljump'
 #if defined(MSWIN) && defined(FEAT_GUI)
@@ -843,6 +872,7 @@ EXTERN unsigned	ssop_flags;
 # define SSOP_CURSOR		0x4000
 # define SSOP_TABPAGES		0x8000
 # define SSOP_TERMINAL		0x10000
+# define SSOP_SKIP_RTP		0x20000
 #endif
 EXTERN char_u	*p_sh;		// 'shell'
 EXTERN char_u	*p_shcf;	// 'shellcmdflag'
@@ -903,6 +933,7 @@ EXTERN char_u	*p_tfu;		// 'tagfunc'
 EXTERN char_u	*p_spc;		// 'spellcapcheck'
 EXTERN char_u	*p_spf;		// 'spellfile'
 EXTERN char_u	*p_spl;		// 'spelllang'
+EXTERN char_u	*p_spo;		// 'spelloptions'
 EXTERN char_u	*p_sps;		// 'spellsuggest'
 #endif
 EXTERN int	p_spr;		// 'splitright'
@@ -911,11 +942,13 @@ EXTERN char_u	*p_su;		// 'suffixes'
 EXTERN char_u	*p_sws;		// 'swapsync'
 EXTERN char_u	*p_swb;		// 'switchbuf'
 EXTERN unsigned	swb_flags;
+// Keep in sync with p_swb_values in optionstr.c
 #define SWB_USEOPEN		0x001
 #define SWB_USETAB		0x002
 #define SWB_SPLIT		0x004
 #define SWB_NEWTAB		0x008
 #define SWB_VSPLIT		0x010
+#define SWB_USELAST		0x020
 EXTERN char_u	*p_syn;		// 'syntax'
 EXTERN long	p_ts;		// 'tabstop'
 EXTERN int	p_tbs;		// 'tagbsearch'
@@ -1023,6 +1056,8 @@ EXTERN unsigned ve_flags;
 #define VE_INSERT	6	// includes "all"
 #define VE_ALL		4
 #define VE_ONEMORE	8
+#define VE_NONE		16	// "none"
+#define VE_NONEU	32      // "NONE"
 EXTERN long	p_verbose;	// 'verbose'
 #ifdef IN_OPTION_C
 char_u	*p_vfile = (char_u *)""; // used before options are initialized
@@ -1064,7 +1099,7 @@ EXTERN int	p_wb;		// 'writebackup'
 EXTERN long	p_wd;		// 'writedelay'
 
 /*
- * "indir" values for buffer-local opions.
+ * "indir" values for buffer-local options.
  * These need to be defined globally, so that the BV_COUNT can be used with
  * b_p_scriptID[].
  */
@@ -1173,6 +1208,7 @@ enum
     , BV_SPC
     , BV_SPF
     , BV_SPL
+    , BV_SPO
 #endif
     , BV_STS
 #ifdef FEAT_SEARCHPATH
@@ -1185,6 +1221,9 @@ enum
 #endif
     , BV_TAGS
     , BV_TC
+#ifdef FEAT_COMPL_FUNC
+    , BV_TSRFU
+#endif
     , BV_TS
     , BV_TW
     , BV_TX
@@ -1198,6 +1237,7 @@ enum
     , BV_VSTS
     , BV_VTS
 #endif
+    , BV_VE
     , BV_COUNT	    // must be the last one
 };
 
@@ -1209,6 +1249,7 @@ enum
 enum
 {
     WV_LIST = 0
+    , WV_LCS
 #ifdef FEAT_ARABIC
     , WV_ARAB
 #endif
@@ -1288,3 +1329,5 @@ enum
 
 // Value for b_p_ul indicating the global value must be used.
 #define NO_LOCAL_UNDOLEVEL -123456
+
+#endif // _OPTION_H_

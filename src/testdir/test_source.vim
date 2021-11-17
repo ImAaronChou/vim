@@ -1,5 +1,8 @@
 " Tests for the :source command.
 
+source check.vim
+source view_util.vim
+
 func Test_source_autocmd()
   call writefile([
 	\ 'let did_source = 1',
@@ -46,3 +49,65 @@ func Test_source_sandbox()
   bwipe!
   call delete('Xsourcehello')
 endfunc
+
+" When deleting a file and immediately creating a new one the inode may be
+" recycled.  Vim should not recognize it as the same script.
+func Test_different_script()
+  call writefile(['let s:var = "asdf"'], 'XoneScript')
+  source XoneScript
+  call delete('XoneScript')
+  call writefile(['let g:var = s:var'], 'XtwoScript')
+  call assert_fails('source XtwoScript', 'E121:')
+  call delete('XtwoScript')
+endfunc
+
+" When sourcing a vim script, shebang should be ignored.
+func Test_source_ignore_shebang()
+  call writefile(['#!./xyzabc', 'let g:val=369'], 'Xfile.vim')
+  source Xfile.vim
+  call assert_equal(g:val, 369)
+  call delete('Xfile.vim')
+endfunc
+
+" Test for expanding <sfile> in a autocmd and for <slnum> and <sflnum>
+func Test_source_autocmd_sfile()
+  let code =<< trim [CODE]
+    let g:SfileName = ''
+    augroup sfiletest
+      au!
+      autocmd User UserAutoCmd let g:Sfile = '<sfile>:t'
+    augroup END
+    doautocmd User UserAutoCmd
+    let g:Slnum = expand('<slnum>')
+    let g:Sflnum = expand('<sflnum>')
+    augroup! sfiletest
+  [CODE]
+  call writefile(code, 'Xscript.vim')
+  source Xscript.vim
+  call assert_equal('Xscript.vim', g:Sfile)
+  call assert_equal('7', g:Slnum)
+  call assert_equal('8', g:Sflnum)
+  call delete('Xscript.vim')
+endfunc
+
+func Test_source_error()
+  call assert_fails('scriptencoding utf-8', 'E167:')
+  call assert_fails('finish', 'E168:')
+  call assert_fails('scriptversion 2', 'E984:')
+endfunc
+
+" Test for sourcing a script recursively
+func Test_nested_script()
+  CheckRunVimInTerminal
+  call writefile([':source! Xscript.vim', ''], 'Xscript.vim')
+  let buf = RunVimInTerminal('', {'rows': 6})
+  call term_wait(buf)
+  call term_sendkeys(buf, ":set noruler\n")
+  call term_sendkeys(buf, ":source! Xscript.vim\n")
+  call term_wait(buf)
+  call WaitForAssert({-> assert_match('E22: Scripts nested too deep\s*', term_getline(buf, 6))})
+  call delete('Xscript.vim')
+  call StopVimInTerminal(buf)
+endfunc
+
+" vim: shiftwidth=2 sts=2 expandtab

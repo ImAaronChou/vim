@@ -58,28 +58,29 @@ rettv_blob_set(typval_T *rettv, blob_T *b)
 }
 
     int
-blob_copy(typval_T *from, typval_T *to)
+blob_copy(blob_T *from, typval_T *to)
 {
     int	    ret = OK;
 
     to->v_type = VAR_BLOB;
     to->v_lock = 0;
-    if (from->vval.v_blob == NULL)
+    if (from == NULL)
 	to->vval.v_blob = NULL;
     else if (rettv_blob_alloc(to) == FAIL)
 	ret = FAIL;
     else
     {
-	int  len = from->vval.v_blob->bv_ga.ga_len;
+	int  len = from->bv_ga.ga_len;
 
 	if (len > 0)
 	{
 	    to->vval.v_blob->bv_ga.ga_data =
-			    vim_memsave(from->vval.v_blob->bv_ga.ga_data, len);
+					 vim_memsave(from->bv_ga.ga_data, len);
 	    if (to->vval.v_blob->bv_ga.ga_data == NULL)
 		len = 0;
 	}
 	to->vval.v_blob->bv_ga.ga_len = len;
+	to->vval.v_blob->bv_ga.ga_maxlen = len;
     }
     return ret;
 }
@@ -124,13 +125,33 @@ blob_get(blob_T *b, int idx)
 }
 
 /*
- * Store one byte "c" in blob "b" at "idx".
+ * Store one byte "byte" in blob "blob" at "idx".
  * Caller must make sure that "idx" is valid.
  */
     void
-blob_set(blob_T *b, int idx, char_u c)
+blob_set(blob_T *blob, int idx, int byte)
 {
-    ((char_u*)b->bv_ga.ga_data)[idx] = c;
+    ((char_u*)blob->bv_ga.ga_data)[idx] = byte;
+}
+
+/*
+ * Store one byte "byte" in blob "blob" at "idx".
+ * Append one byte if needed.
+ */
+    void
+blob_set_append(blob_T *blob, int idx, int byte)
+{
+    garray_T *gap = &blob->bv_ga;
+
+    // Allow for appending a byte.  Setting a byte beyond
+    // the end is an error otherwise.
+    if (idx < gap->ga_len
+	    || (idx == gap->ga_len && ga_grow(gap, 1) == OK))
+    {
+	blob_set(blob, idx, byte);
+	if (idx == gap->ga_len)
+	    ++gap->ga_len;
+    }
 }
 
 /*
@@ -258,19 +279,152 @@ failed:
     return NULL;
 }
 
+    int
+blob_slice_or_index(
+	blob_T		*blob,
+	int		is_range,
+	varnumber_T	n1,
+	varnumber_T	n2,
+	int		exclusive,
+	typval_T	*rettv)
+{
+    long	    len = blob_len(blob);
+
+    if (is_range)
+    {
+	// The resulting variable is a sub-blob.  If the indexes
+	// are out of range the result is empty.
+	if (n1 < 0)
+	{
+	    n1 = len + n1;
+	    if (n1 < 0)
+		n1 = 0;
+	}
+	if (n2 < 0)
+	    n2 = len + n2;
+	else if (n2 >= len)
+	    n2 = len - (exclusive ? 0 : 1);
+	if (exclusive)
+	    --n2;
+	if (n1 >= len || n2 < 0 || n1 > n2)
+	{
+	    clear_tv(rettv);
+	    rettv->v_type = VAR_BLOB;
+	    rettv->vval.v_blob = NULL;
+	}
+	else
+	{
+	    blob_T  *new_blob = blob_alloc();
+	    long    i;
+
+	    if (new_blob != NULL)
+	    {
+		if (ga_grow(&new_blob->bv_ga, n2 - n1 + 1) == FAIL)
+		{
+		    blob_free(new_blob);
+		    return FAIL;
+		}
+		new_blob->bv_ga.ga_len = n2 - n1 + 1;
+		for (i = n1; i <= n2; i++)
+		    blob_set(new_blob, i - n1, blob_get(blob, i));
+
+		clear_tv(rettv);
+		rettv_blob_set(rettv, new_blob);
+	    }
+	}
+    }
+    else
+    {
+	// The resulting variable is a byte value.
+	// If the index is too big or negative that is an error.
+	if (n1 < 0)
+	    n1 = len + n1;
+	if (n1 < len && n1 >= 0)
+	{
+	    int v = blob_get(blob, n1);
+
+	    clear_tv(rettv);
+	    rettv->v_type = VAR_NUMBER;
+	    rettv->vval.v_number = v;
+	}
+	else
+	{
+	    semsg(_(e_blobidx), n1);
+	    return FAIL;
+	}
+    }
+    return OK;
+}
+
+/*
+ * Check if "n1"- is a valid index for a blobl with length "bloblen".
+ */
+    int
+check_blob_index(long bloblen, varnumber_T n1, int quiet)
+{
+    if (n1 < 0 || n1 > bloblen)
+    {
+	if (!quiet)
+	    semsg(_(e_blobidx), n1);
+	return FAIL;
+    }
+    return OK;
+}
+
+/*
+ * Check if "n1"-"n2" is a valid range for a blob with length "bloblen".
+ */
+    int
+check_blob_range(long bloblen, varnumber_T n1, varnumber_T n2, int quiet)
+{
+    if (n2 < 0 || n2 >= bloblen || n2 < n1)
+    {
+	if (!quiet)
+	    semsg(_(e_blobidx), n2);
+	return FAIL;
+    }
+    return OK;
+}
+
+/*
+ * Set bytes "n1" to "n2" (inclusive) in "dest" to the value of "src".
+ * Caller must make sure "src" is a blob.
+ * Returns FAIL if the number of bytes does not match.
+ */
+    int
+blob_set_range(blob_T *dest, long n1, long n2, typval_T *src)
+{
+    int	il, ir;
+
+    if (n2 - n1 + 1 != blob_len(src->vval.v_blob))
+    {
+	emsg(_("E972: Blob value does not have the right number of bytes"));
+	return FAIL;
+    }
+
+    ir = 0;
+    for (il = n1; il <= n2; il++)
+	blob_set(dest, il, blob_get(src->vval.v_blob, ir++));
+    return OK;
+}
+
 /*
  * "remove({blob})" function
  */
     void
-blob_remove(typval_T *argvars, typval_T *rettv)
+blob_remove(typval_T *argvars, typval_T *rettv, char_u *arg_errmsg)
 {
+    blob_T	*b = argvars[0].vval.v_blob;
     int		error = FALSE;
-    long	idx = (long)tv_get_number_chk(&argvars[1], &error);
+    long	idx;
     long	end;
 
+    if (b != NULL && value_check_lock(b->bv_lock, arg_errmsg, TRUE))
+	return;
+
+    idx = (long)tv_get_number_chk(&argvars[1], &error);
     if (!error)
     {
-	blob_T  *b = argvars[0].vval.v_blob;
 	int	len = blob_len(b);
 	char_u  *p;
 
@@ -294,7 +448,7 @@ blob_remove(typval_T *argvars, typval_T *rettv)
 	{
 	    blob_T  *blob;
 
-	    // Remove range of items, return list with values.
+	    // Remove range of items, return blob with values.
 	    end = (long)tv_get_number_chk(&argvars[2], &error);
 	    if (error)
 		return;
@@ -322,10 +476,72 @@ blob_remove(typval_T *argvars, typval_T *rettv)
 	    rettv->v_type = VAR_BLOB;
 	    rettv->vval.v_blob = blob;
 
-	    mch_memmove(p + idx, p + end + 1, (size_t)(len - end));
+	    if (len - end - 1 > 0)
+		mch_memmove(p + idx, p + end + 1, (size_t)(len - end - 1));
 	    b->bv_ga.ga_len -= end - idx + 1;
 	}
     }
 }
 
-#endif /* defined(FEAT_EVAL) */
+/*
+ * blob2list() function
+ */
+    void
+f_blob2list(typval_T *argvars, typval_T *rettv)
+{
+    blob_T	*blob;
+    list_T	*l;
+    int		i;
+
+    if (rettv_list_alloc(rettv) == FAIL)
+	return;
+
+    if (check_for_blob_arg(argvars, 0) == FAIL)
+	return;
+
+    blob = argvars->vval.v_blob;
+    l = rettv->vval.v_list;
+    for (i = 0; i < blob_len(blob); i++)
+	list_append_number(l, blob_get(blob, i));
+}
+
+/*
+ * list2blob() function
+ */
+    void
+f_list2blob(typval_T *argvars, typval_T *rettv)
+{
+    list_T	*l;
+    listitem_T	*li;
+    blob_T	*blob;
+
+    if (rettv_blob_alloc(rettv) == FAIL)
+	return;
+    blob = rettv->vval.v_blob;
+
+    if (check_for_list_arg(argvars, 0) == FAIL)
+	return;
+
+    l = argvars->vval.v_list;
+    if (l == NULL)
+	return;
+
+    FOR_ALL_LIST_ITEMS(l, li)
+    {
+	int		error;
+	varnumber_T	n;
+
+	error = FALSE;
+	n = tv_get_number_chk(&li->li_tv, &error);
+	if (error == TRUE || n < 0 || n > 255)
+	{
+	    if (!error)
+		semsg(_(e_invalid_value_for_blob_nr), n);
+	    ga_clear(&blob->bv_ga);
+	    return;
+	}
+	ga_append(&blob->bv_ga, n);
+    }
+}
+
+#endif // defined(FEAT_EVAL)
