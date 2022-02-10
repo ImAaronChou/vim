@@ -140,6 +140,7 @@ nextwild(
     int		escape)		// if TRUE, escape the returned matches
 {
     cmdline_info_T	*ccline = get_cmdline_info();
+
     int		i, j;
     char_u	*p1;
     char_u	*p2;
@@ -1986,10 +1987,49 @@ ExpandFromContext(
 	if (options & WILD_ICASE)
 	    flags |= EW_ICASE;
 
-	// Expand wildcards, supporting %:h and the like.
-	ret = expand_wildcards_eval(&pat, num_file, file, flags);
-	if (free_pat)
-	    vim_free(pat);
+    /* >>>>>>>>>>>>>>>>>>>预处理路径，添加挂载路劲在索引前  */
+    char_u *expand_host_p = pat;
+    if (xp->xp_context == EXPAND_FILES ||
+        xp->xp_context == EXPAND_FILES_IN_PATH) {
+      if (*pat == '~') {
+        expand_host_p = expand_env_save_opt(pat, TRUE);
+        if (expand_host_p == NULL) {
+          emsg(_("expand ~ var fail"));
+        }
+      }
+    }
+    char_u* pat_p = pat; 
+    char *host_prefix = "/host";
+    if(*expand_host_p == '/')
+    {
+        pat_p = concat_str(host_prefix, expand_host_p);
+        if (expand_host_p != pat) {
+          vim_free(expand_host_p);
+        }
+    }
+    /* <<<<<<<<<<<<<<<<完成预处理*/
+
+    // Expand wildcards, supporting %:h and the like.
+    /*ret = expand_wildcards_eval(&pat, num_file, file, flags);*/
+    ret = expand_wildcards_eval(&pat_p, num_file, file, flags);
+
+    /* >>>>>>>>>>>>>>>>释放新构造的指针，及删除前缀，使显示与原命令一致  */
+    if(pat_p != pat)
+    {
+        vim_free(pat_p);
+    }
+
+    for (int idx = 0; idx < *num_file; ++idx)
+    {
+      char_u *origin_file = vim_strsave(&(*file)[idx][strlen(host_prefix)]);
+      char_u *old_p = (*file)[idx];
+      (*file)[idx] = origin_file;
+      vim_free(old_p);
+    }
+    /* <<<<<<<<<<<<<<<<完成操作*/
+
+    if (free_pat)
+      vim_free(pat);
 #ifdef BACKSLASH_IN_FILENAME
 	if (p_csl[0] != NUL && (options & WILD_IGNORE_COMPLETESLASH) == 0)
 	{

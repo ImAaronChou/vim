@@ -6959,7 +6959,20 @@ do_exedit(
 				    // empty buffer
 	if (eap->cmdidx != CMD_balt && eap->cmdidx != CMD_badd)
 	    setpcmark();
-	if (do_ecmd(0, (eap->cmdidx == CMD_enew ? NULL : eap->arg),
+
+    /*>>>>>>>>>>>>>>将传入的路径添加挂载路径前缀，使得可以打开正确的文件*/
+    char_u* do_ecmd_arg = (eap->cmdidx == CMD_enew ? NULL : eap->arg);
+    if(eap->cmdidx == CMD_edit)
+    {
+        if(*eap->arg == '/')
+        {
+            do_ecmd_arg = concat_str("/host", eap->arg);
+        }
+    }
+
+	if (do_ecmd(0, do_ecmd_arg,
+    /*<<<<<<<<<<<<<<完成操作，替换参数为可能新构造的指针*/
+	/*if (do_ecmd(0, (eap->cmdidx == CMD_enew ? NULL : eap->arg),*/
 		    NULL, eap,
 		    // ":edit" goes to first line if Vi compatible
 		    (*eap->arg == NUL && eap->do_ecmd_lnum == 0
@@ -7009,6 +7022,14 @@ do_exedit(
 	    curbuf->b_p_ro = TRUE;
 	}
 	readonlymode = n;
+
+    /*>>>>>>>>>>>>>>如果新构造了指针，则析构指针*/
+    if(eap->cmdidx == CMD_edit)
+    {
+        vim_free(do_ecmd_arg);  
+    }
+    /*<<<<<<<<<<<<<<完成操作*/
+
     }
     else
     {
