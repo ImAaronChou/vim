@@ -13,6 +13,7 @@
 
 #include "vim.h"
 
+
 static int	cmd_showtail;	// Only show path tail in lists ?
 
 static void	set_expand_context(expand_T *xp);
@@ -190,10 +191,52 @@ nextwild(
 
 	    if (p_wic)
 		use_options += WILD_ICASE;
+        /* >>>>>>>>>>>>>>>>>>>预处理路径，添加挂载路劲在索引前  */
+        if (xp->xp_context == EXPAND_FILES ||
+            xp->xp_context == EXPAND_FILES_IN_PATH) {
+
+          if (*p1 == '~') {
+            char_u* old_p1 = p1;
+            p1 = expand_env_save_opt(p1, TRUE);
+            if (p1 == NULL) {
+              emsg(_("expand ~ var fail"));
+            }
+            vim_free(old_p1);
+          }
+        }
+
+        Bool is_concat_host = FALSE;
+        char *host_prefix = "/host";
+        if(*p1 == '/')
+        {
+            is_concat_host = TRUE;
+            char_u* old_p1 = p1;
+
+            p1 = concat_str(host_prefix, p1); 
+            vim_free(old_p1);
+        }
+        /* <<<<<<<<<<<<<<<<完成预处理*/
 	    p2 = ExpandOne(xp, p1,
 			 vim_strnsave(&ccline->cmdbuff[i], xp->xp_pattern_len),
 							   use_options, type);
 	    vim_free(p1);
+
+        /* >>>>>>>>>>>>>>>>释放新构造的指针，及删除前缀，使显示与原命令一致  */
+        if(is_concat_host && p2 != NULL)
+        {
+            /*is_edit_in_host = TRUE;*/
+            //修改命令行显示的路径
+            char_u* old_p2 = p2;
+            p2 = vim_strsave(&(p2[strlen(host_prefix)]));
+            vim_free(old_p2);
+
+            for (int idx = 0; idx < xp->xp_numfiles; ++idx) {
+                char_u *old_p = xp->xp_files[idx];
+                xp->xp_files[idx] = vim_strsave(&(xp->xp_files[idx][strlen(host_prefix)]));
+                vim_free(old_p);
+            }
+        }
+    /* <<<<<<<<<<<<<<<<完成操作*/
 	    // longest match: make sure it is not shorter, happens with :help
 	    if (p2 != NULL && type == WILD_LONGEST)
 	    {
@@ -1987,46 +2030,9 @@ ExpandFromContext(
 	if (options & WILD_ICASE)
 	    flags |= EW_ICASE;
 
-    /* >>>>>>>>>>>>>>>>>>>预处理路径，添加挂载路劲在索引前  */
-    char_u *expand_host_p = pat;
-    if (xp->xp_context == EXPAND_FILES ||
-        xp->xp_context == EXPAND_FILES_IN_PATH) {
-      if (*pat == '~') {
-        expand_host_p = expand_env_save_opt(pat, TRUE);
-        if (expand_host_p == NULL) {
-          emsg(_("expand ~ var fail"));
-        }
-      }
-    }
-    char_u* pat_p = pat; 
-    char *host_prefix = "/host";
-    if(*expand_host_p == '/')
-    {
-        pat_p = concat_str(host_prefix, expand_host_p);
-        if (expand_host_p != pat) {
-          vim_free(expand_host_p);
-        }
-    }
-    /* <<<<<<<<<<<<<<<<完成预处理*/
-
+    /*is_edit_in_host = FALSE;*/
     // Expand wildcards, supporting %:h and the like.
-    /*ret = expand_wildcards_eval(&pat, num_file, file, flags);*/
-    ret = expand_wildcards_eval(&pat_p, num_file, file, flags);
-
-    /* >>>>>>>>>>>>>>>>释放新构造的指针，及删除前缀，使显示与原命令一致  */
-    if(pat_p != pat)
-    {
-        vim_free(pat_p);
-    }
-
-    for (int idx = 0; idx < *num_file; ++idx)
-    {
-      char_u *origin_file = vim_strsave(&(*file)[idx][strlen(host_prefix)]);
-      char_u *old_p = (*file)[idx];
-      (*file)[idx] = origin_file;
-      vim_free(old_p);
-    }
-    /* <<<<<<<<<<<<<<<<完成操作*/
+    ret = expand_wildcards_eval(&pat, num_file, file, flags);
 
     if (free_pat)
       vim_free(pat);

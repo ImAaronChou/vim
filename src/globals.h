@@ -275,6 +275,9 @@ EXTERN int	vgetc_busy INIT(= 0);	      // when inside vgetc() then > 0
 EXTERN int	didset_vim INIT(= FALSE);	    // did set $VIM ourselves
 EXTERN int	didset_vimruntime INIT(= FALSE);    // idem for $VIMRUNTIME
 
+//用于判断是否使用了:e命令，以判断在do_edit时是否要添加路径前缀
+//EXTERN int is_edit_in_host INIT(= FALSE);
+
 /*
  * Lines left before a "more" message.	Ex mode needs to be able to reset this
  * after you type something.
