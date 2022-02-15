@@ -6963,14 +6963,14 @@ do_exedit(
     /*>>>>>>>>>>>>>>将传入的路径添加挂载路径前缀，使得可以打开正确的文件*/
     char_u* do_ecmd_arg = (eap->cmdidx == CMD_enew ? NULL : eap->arg);
     Bool is_add_prefix = FALSE;
-    //if(eap->cmdidx == CMD_edit && is_edit_in_host)
-    if(eap->cmdidx == CMD_edit)
+    if(eap->cmdidx == CMD_edit && is_edit_in_host)
     {
         if(*eap->arg == '/')
         {
             do_ecmd_arg = concat_str("/host", eap->arg);
             is_add_prefix = TRUE; 
         }
+        is_edit_in_host = FALSE;
     }
 
 	if (do_ecmd(0, do_ecmd_arg,

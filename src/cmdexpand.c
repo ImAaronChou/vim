@@ -192,10 +192,12 @@ nextwild(
 	    if (p_wic)
 		use_options += WILD_ICASE;
         /* >>>>>>>>>>>>>>>>>>>预处理路径，添加挂载路劲在索引前  */
+        Bool is_expand_home = FALSE;
         if (xp->xp_context == EXPAND_FILES ||
             xp->xp_context == EXPAND_FILES_IN_PATH) {
 
           if (*p1 == '~') {
+            is_expand_home = TRUE;
             char_u* old_p1 = p1;
             p1 = expand_env_save_opt(p1, TRUE);
             if (p1 == NULL) {
@@ -224,16 +226,46 @@ nextwild(
         /* >>>>>>>>>>>>>>>>释放新构造的指针，及删除前缀，使显示与原命令一致  */
         if(is_concat_host && p2 != NULL)
         {
-            /*is_edit_in_host = TRUE;*/
-            //修改命令行显示的路径
-            char_u* old_p2 = p2;
-            p2 = vim_strsave(&(p2[strlen(host_prefix)]));
-            vim_free(old_p2);
+            is_edit_in_host = TRUE;
+            { //删除/host前缀
+              //修改命令行显示的路径
+              char_u *old_p2 = p2;
+              p2 = vim_strsave(&(p2[strlen(host_prefix)]));
+              vim_free(old_p2);
+            }
 
+            int mustfree = 0;
+            char_u* home_str = vim_getenv("HOME", &mustfree);
+            size_t home_len = strlen(home_str);
+            if(mustfree)
+            {
+                vim_free(home_str);
+            }
+
+            if(is_expand_home) //将$home替换回~
+            {
+                char_u* old_p2 = p2;
+                p2 = concat_str("~", &(p2[home_len])); 
+                vim_free(old_p2);
+            }
+
+            //每次都返回全路径，需要去掉/host避免补全后，添加了/host的路径
             for (int idx = 0; idx < xp->xp_numfiles; ++idx) {
+              { //删除/host前缀
                 char_u *old_p = xp->xp_files[idx];
-                xp->xp_files[idx] = vim_strsave(&(xp->xp_files[idx][strlen(host_prefix)]));
+                xp->xp_files[idx] =
+                    vim_strsave(&(xp->xp_files[idx][strlen(host_prefix)]));
                 vim_free(old_p);
+              }
+              {//将$home替换回~
+                if (is_expand_home) //将$home替换回~
+                {
+                  char_u *old_p = xp->xp_files[idx];
+                  xp->xp_files[idx] =
+                      concat_str("~", &(xp->xp_files[idx][home_len]));
+                  vim_free(old_p);
+                }
+              }
             }
         }
     /* <<<<<<<<<<<<<<<<完成操作*/
@@ -2030,7 +2062,7 @@ ExpandFromContext(
 	if (options & WILD_ICASE)
 	    flags |= EW_ICASE;
 
-    /*is_edit_in_host = FALSE;*/
+    is_edit_in_host = FALSE;
     // Expand wildcards, supporting %:h and the like.
     ret = expand_wildcards_eval(&pat, num_file, file, flags);
 
